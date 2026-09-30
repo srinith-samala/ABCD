@@ -1,0 +1,12 @@
+export const orders = [
+  { id: 'ORD-1041', date: '12 Jan 2026', supplier: 'Fresh Farms Pvt Ltd', items: 8, amount: 14200, payment: 'Paid', status: 'Delivered', products: [{ name: 'Tomatoes', qty: 50, price: 45 }, { name: 'Onions', qty: 40, price: 35 }, { name: 'Green Apples', qty: 20, price: 110 }] },
+  { id: 'ORD-1042', date: '13 Jan 2026', supplier: 'Amul Direct', items: 3, amount: 6800, payment: 'Pending', status: 'Processing', products: [{ name: 'Full Cream Milk', qty: 60, price: 55 }, { name: 'Amul Butter', qty: 20, price: 68 }] },
+  { id: 'ORD-1043', date: '14 Jan 2026', supplier: 'Mother Dairy Co', items: 5, amount: 9400, payment: 'Paid', status: 'Delivered', products: [{ name: 'Mother Dairy Curd', qty: 50, price: 52 }, { name: 'Full Cream Milk', qty: 80, price: 55 }] },
+  { id: 'ORD-1044', date: '15 Jan 2026', supplier: 'AgriCo Wholesale', items: 12, amount: 22100, payment: 'Unpaid', status: 'Pending', products: [{ name: 'Basmati Rice', qty: 100, price: 120 }, { name: 'Sugar', qty: 50, price: 50 }, { name: 'Toor Dal', qty: 30, price: 155 }] },
+  { id: 'ORD-1045', date: '15 Jan 2026', supplier: 'Britannia Industries', items: 6, amount: 5600, payment: 'Paid', status: 'Delivered', products: [{ name: 'Good Day Biscuits', qty: 80, price: 30 }, { name: "Lay's Chips", qty: 60, price: 25 }] },
+  { id: 'ORD-1046', date: '16 Jan 2026', supplier: 'HarvestHub', items: 4, amount: 7800, payment: 'Paid', status: 'Delivered', products: [{ name: 'Tata Tea Gold', qty: 20, price: 220 }, { name: 'Bisleri Water', qty: 100, price: 20 }] },
+  { id: 'ORD-1047', date: '17 Jan 2026', supplier: 'Fresh Farms Pvt Ltd', items: 7, amount: 11200, payment: 'Pending', status: 'Pending', products: [{ name: 'Tomatoes', qty: 60, price: 45 }, { name: 'Green Apples', qty: 30, price: 110 }] },
+  { id: 'ORD-1048', date: '18 Jan 2026', supplier: 'AgriCo Wholesale', items: 9, amount: 18500, payment: 'Paid', status: 'Processing', products: [{ name: 'Wheat Flour (Atta)', qty: 80, price: 48 }, { name: 'Sunflower Oil', qty: 30, price: 165 }] },
+  { id: 'ORD-1049', date: '19 Jan 2026', supplier: 'Amul Direct', items: 5, amount: 8900, payment: 'Paid', status: 'Delivered', products: [{ name: 'Full Cream Milk', qty: 100, price: 55 }, { name: 'Amul Butter', qty: 30, price: 68 }] },
+  { id: 'ORD-1050', date: '20 Jan 2026', supplier: 'Britannia Industries', items: 3, amount: 4200, payment: 'Unpaid', status: 'Cancelled', products: [{ name: 'Whole Wheat Bread', qty: 40, price: 45 }, { name: 'Good Day Biscuits', qty: 50, price: 30 }] },
+];

@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+  role      String   @default("WORKER") // "ADMIN", "USER", "WORKER"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Category {
+  id        Int       @id @default(autoincrement())
+  name      String    @unique
+  products  Product[]
+  createdAt DateTime  @default(now())
+}
+
+model Supplier {
+  id        Int       @id @default(autoincrement())
+  name      String
+  contact   String?
+  email     String?
+  status    String    @default("Active")
+  createdAt DateTime  @default(now())
+}
+
+model Product {
+  id           Int           @id @default(autoincrement())
+  name         String
+  sku          String?       // Make optional if not always present
+  categoryId   Int?
+  category     Category?     @relation(fields: [categoryId], references: [id])
+  price        Float
+  quantity     Int           @default(0) // Closing stock
+  openingStock Int           @default(0)
+  unit         String?       @default("pcs")
+  reorderLevel Int           @default(10)
+  emoji        String?       @default("📦")
+  transactions Transaction[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Transaction {
+  id        Int      @id @default(autoincrement())
+  type      String   // "SALE", "PURCHASE"
+  quantity  Int
+  total     Float
+  productId Int
+  product   Product  @relation(fields: [productId], references: [id])
+  userId    Int?     // Who made the transaction
+  createdAt DateTime @default(now())
+}
+
+model Expense {
+  id        Int      @id @default(autoincrement())
+  title     String
+  amount    Float
+  category  String   @default("General") // e.g., Light Bill, Rent, etc.
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+}

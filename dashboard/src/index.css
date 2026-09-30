@@ -1,0 +1,174 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background-color: #F4F5F7;
+  color: #0F1B2D;
+  overflow-x: hidden;
+}
+
+:root {
+  --bg: #F4F5F7;
+  --sidebar: #0F1B2D;
+  --sidebar-active: #1A2E45;
+  --accent: #2ECC71;
+  --accent-dark: #27AE60;
+  --accent-muted: #D6F5E3;
+  --card: #FFFFFF;
+  --text-primary: #0F1B2D;
+  --text-muted: #8A94A6;
+  --border: #E8EAED;
+  --danger: #EF4444;
+  --danger-muted: #FEE2E2;
+  --warning: #F59E0B;
+  --warning-muted: #FEF3C7;
+  --purple: #6C63FF;
+  --purple-muted: #EEF0FF;
+  --radius: 16px;
+  --shadow: 0 2px 16px rgba(0,0,0,0.06);
+}
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 24px;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #D0D0E0; border-radius: 2px; }
+
+/* Page fade-in */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.page-fade {
+  animation: fadeIn 0.2s ease forwards;
+}
+
+/* Green pulse bar */
+@keyframes pulse-bar {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.pulse-bar {
+  animation: pulse-bar 2s ease-in-out infinite;
+}
+
+/* Shimmer on login */
+@keyframes shimmer-move {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+.shimmer-bg {
+  background: linear-gradient(135deg, #0F1B2D 0%, #1A2E45 40%, #2ECC71 50%, #1A2E45 60%, #0F1B2D 100%);
+  background-size: 300% 300%;
+  animation: shimmer-move 6s linear infinite;
+}
+
+/* Active pulse dot */
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(46,204,113,0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(46,204,113,0); }
+}
+.pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Recharts overrides */
+.recharts-default-tooltip { display: none !important; }
+.recharts-cartesian-axis-tick-value { font-family: 'DM Sans', sans-serif !important; font-size: 12px; }
+
+/* Table styles */
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 0 12px 0; border-bottom: 1px solid var(--border); }
+td { padding: 14px 0; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text-primary); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #FAFBFC; }
+
+/* Badge */
+.badge {
+  display: inline-flex; align-items: center;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px; font-weight: 600;
+}
+
+/* Toggle */
+.toggle {
+  position: relative; width: 40px; height: 22px;
+  background: #E8EAED; border-radius: 11px;
+  cursor: pointer; transition: background 0.2s;
+  border: none; flex-shrink: 0;
+}
+.toggle.on { background: #2ECC71; }
+.toggle::after {
+  content: ''; position: absolute; top: 3px; left: 3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.toggle.on::after { transform: translateX(18px); }
+
+/* Settings dot grid */
+.dot-grid {
+  background-image: radial-gradient(circle, #E8EAED 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Sidebar nav item */
+.nav-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: rgba(255,255,255,0.55);
+  font-size: 14px; font-weight: 500;
+  text-decoration: none;
+  border-left: 3px solid transparent;
+  margin: 1px 0;
+}
+.nav-item:hover {
+  color: rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.05);
+}
+.nav-item.active {
+  color: #2ECC71;
+  background: rgba(46,204,113,0.1);
+  border-left-color: #2ECC71;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #printable-invoice, #printable-invoice * {
+    visibility: visible;
+  }
+  #printable-invoice {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: auto;
+    margin: 0;
+    padding: 20px;
+    box-shadow: none !important;
+    background: white !important;
+  }
+  /* Hide the close button, edit, and print buttons when printing */
+  .no-print, .no-print * {
+    display: none !important;
+  }
+}
