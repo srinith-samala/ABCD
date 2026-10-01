@@ -13,6 +13,9 @@ const ALIASES = {
   reorderLevel: ['reorderlevel', 'reorder', 'minstock', 'minimumstock'],
   sku: ['sku', 'code', 'productcode', 'barcode'],
   emoji: ['emoji', 'icon'],
+  costPrice: ['costprice', 'buyprice', 'buyingprice', 'purchaseprice', 'cost'],
+  description: ['description', 'desc', 'notes'],
+  supplier: ['supplier', 'suppliername', 'vendor'],
 };
 
 const norm = (h) => String(h == null ? '' : h).toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -111,6 +114,13 @@ async function parseProductsFile(buffer, filename) {
       continue;
     }
 
+    const costRaw = get('costPrice');
+    const costPrice = costRaw === '' ? null : toNumber(costRaw);
+    if (costPrice !== null && (Number.isNaN(costPrice) || costPrice < 0)) {
+      errors.push({ row: r, name, message: `Invalid buy price "${costRaw}"` });
+      continue;
+    }
+
     rows.push({
       rowNumber: r,
       name,
@@ -121,6 +131,9 @@ async function parseProductsFile(buffer, filename) {
       reorderLevel: Math.round(reorderLevel),
       sku: get('sku').slice(0, 60) || null,
       emoji: get('emoji').slice(0, 8) || '📦',
+      costPrice,
+      description: get('description').slice(0, 500) || null,
+      supplier: get('supplier').slice(0, 80) || null,
     });
   }
   return { rows, errors };

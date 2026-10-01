@@ -77,10 +77,102 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // --- STOCK ROUTES ---
+// ---- product helpers ----
+const PRODUCT_INCLUDE = { category: true, supplier: true };
+const blank = (v) => v === undefined || v === null || String(v).trim() === '';
+const numOrNull = (v) => (blank(v) ? null : Number(v));
+
+async function categoryIdFromName(name) {
+  const n = String(name || '').trim();
+  if (!n) return null;
+  const all = await prisma.category.findMany();
+  const found = all.find(c => c.name.toLowerCase() === n.toLowerCase());
+  if (found) return found.id;
+  return (await prisma.category.create({ data: { name: n } })).id;
+}
+
+// Validates + normalises product fields from a request body. Returns { data } or { error }.
+function readProductBody(body, { partial }) {
+  const data = {};
+  const has = (k) => body[k] !== undefined;
+
+  if (!partial || has('name')) {
+    if (blank(body.name)) return { error: 'Product name is required' };
+    data.name = String(body.name).trim();
+  }
+  if (!partial || has('price')) {
+    const p = Number(body.price);
+    if (blank(body.price) || !(p >= 0)) return { error: 'A valid sell price is required' };
+    data.price = p;
+  }
+  if (has('costPrice')) {
+    const c = numOrNull(body.costPrice);
+    if (c !== null && !(c >= 0)) return { error: 'Buy price must be a positive number' };
+    data.costPrice = c;
+  }
+  if (has('unit')) data.unit = blank(body.unit) ? 'pcs' : String(body.unit).trim().slice(0, 20);
+  if (has('reorderLevel')) {
+    const r = blank(body.reorderLevel) ? 10 : parseInt(body.reorderLevel);
+    if (!(r >= 0)) return { error: 'Reorder level must be 0 or more' };
+    data.reorderLevel = r;
+  }
+  if (has('sku')) data.sku = blank(body.sku) ? null : String(body.sku).trim().slice(0, 60);
+  if (has('emoji')) data.emoji = blank(body.emoji) ? '📦' : String(body.emoji).trim().slice(0, 8);
+  if (has('description')) data.description = blank(body.description) ? null : String(body.description).trim().slice(0, 500);
+  if (has('supplierId')) data.supplierId = blank(body.supplierId) ? null : parseInt(body.supplierId);
+  if (has('expiryDate')) {
+    if (blank(body.expiryDate)) data.expiryDate = null;
+    else {
+      const d = new Date(body.expiryDate);
+      if (isNaN(d.getTime())) return { error: 'Invalid expiry date' };
+      data.expiryDate = d;
+    }
+  }
+  return { data };
+}
+
 app.get('/api/stock', authenticateToken, async (req, res) => {
   try {
-    const stock = await prisma.product.findMany();
+    const stock = await prisma.product.findMany({ include: PRODUCT_INCLUDE });
     res.json(stock);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Stock level at the end of each of the last 7 days (rebuilt from sales/purchases)
+app.get('/api/stock/:id/history', authenticateToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const product = await prisma.product.findUnique({ where: { id }, select: { quantity: true } });
+    if (!product) return res.status(404).json({ error: 'Product not found' });
+
+    const DAY = 86400000;
+    const offsetMin = parseInt(req.query.offset) || 0; // browser's getTimezoneOffset()
+    const localNow = Date.now() - offsetMin * 60000;
+    const todayStartLocal = Math.floor(localNow / DAY) * DAY;
+    const windowStartUtc = todayStartLocal - 6 * DAY + offsetMin * 60000;
+
+    const txs = await prisma.transaction.findMany({
+      where: { productId: id, createdAt: { gte: new Date(windowStartUtc) } },
+      select: { type: true, quantity: true, createdAt: true },
+    });
+
+    const out = [];
+    for (let i = 6; i >= 0; i--) {
+      const dayStartLocal = todayStartLocal - i * DAY;
+      const dayEndUtc = dayStartLocal + DAY + offsetMin * 60000;
+      const net = txs
+        .filter(t => new Date(t.createdAt).getTime() >= dayEndUtc)
+        .reduce((sum, t) => sum + (t.type === 'SALE' ? -t.quantity : t.quantity), 0);
+      const d = new Date(dayStartLocal);
+      out.push({
+        date: d.toISOString().slice(0, 10),
+        label: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getUTCDay()],
+        stock: Math.max(0, product.quantity - net),
+      });
+    }
+    res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -88,33 +180,24 @@ app.get('/api/stock', authenticateToken, async (req, res) => {
 
 app.post('/api/stock', authenticateToken, async (req, res) => {
   try {
-    const { name, category, price, openingStock } = req.body;
-    
-    // Find or create category
-    let categoryRecord = null;
-    if (category) {
-      categoryRecord = await prisma.category.findFirst({ where: { name: category } });
-      if (!categoryRecord) {
-        categoryRecord = await prisma.category.create({ data: { name: category } });
-      }
-    }
+    const { data, error } = readProductBody(req.body, { partial: false });
+    if (error) return res.status(400).json({ error });
 
+    const qtyRaw = req.body.openingStock !== undefined ? req.body.openingStock : req.body.quantity;
+    const qty = blank(qtyRaw) ? 0 : parseInt(qtyRaw);
+    if (!(qty >= 0)) return res.status(400).json({ error: 'Stock must be 0 or more' });
+
+    const categoryId = await categoryIdFromName(req.body.category);
     const product = await prisma.product.create({
-      data: { 
-        name, 
-        categoryId: categoryRecord ? categoryRecord.id : null, 
-        price: parseFloat(price), 
-        openingStock: parseInt(openingStock), 
-        quantity: parseInt(openingStock) 
-      }
+      data: { ...data, categoryId, openingStock: qty, quantity: qty },
+      include: PRODUCT_INCLUDE,
     });
-    
+
     if (req.user.role !== 'ADMIN') {
       await prisma.notification.create({
-        data: { message: `${req.user.name} added a new product: ${name}` }
+        data: { message: `${req.user.name} added a new product: ${product.name}` }
       });
     }
-    
     res.json(product);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -163,6 +246,22 @@ app.post('/api/stock/import', authenticateToken, (req, res, next) => {
         }
         const idByLower = new Map(cats.map(c => [c.name.toLowerCase(), c.id]));
 
+        // suppliers: match by name (case-insensitive), create the ones that don't exist yet
+        const wantedSup = [...new Set(toCreate.map(r => r.supplier).filter(Boolean))];
+        let sups = await tx.supplier.findMany();
+        const supLower = new Set(sups.map(x => x.name.toLowerCase()));
+        const missingSup = [];
+        const seenSup = new Set();
+        for (const name of wantedSup) {
+          const l = name.toLowerCase();
+          if (!supLower.has(l) && !seenSup.has(l)) { seenSup.add(l); missingSup.push({ name }); }
+        }
+        if (missingSup.length) {
+          await tx.supplier.createMany({ data: missingSup });
+          sups = await tx.supplier.findMany();
+        }
+        const supIdByLower = new Map(sups.map(x => [x.name.toLowerCase(), x.id]));
+
         const result = await tx.product.createMany({
           data: toCreate.map(r => ({
             name: r.name,
@@ -174,6 +273,9 @@ app.post('/api/stock/import', authenticateToken, (req, res, next) => {
             unit: r.unit,
             reorderLevel: r.reorderLevel,
             emoji: r.emoji,
+            costPrice: r.costPrice,
+            description: r.description,
+            supplierId: r.supplier ? supIdByLower.get(r.supplier.toLowerCase()) ?? null : null,
           })),
         });
         created = result.count;
@@ -199,24 +301,29 @@ app.post('/api/stock/import', authenticateToken, (req, res, next) => {
 
 app.put('/api/stock/:id', authenticateToken, async (req, res) => {
   try {
-    const { name, category, price, quantity } = req.body;
-    const data = { name, price: parseFloat(price), quantity: parseInt(quantity) };
-    if (category) {
-      let categoryRecord = await prisma.category.findFirst({ where: { name: category } });
-      if (!categoryRecord) categoryRecord = await prisma.category.create({ data: { name: category } });
-      data.categoryId = categoryRecord.id;
+    const { data, error } = readProductBody(req.body, { partial: true });
+    if (error) return res.status(400).json({ error });
+
+    if (req.body.quantity !== undefined) {
+      const q = parseInt(req.body.quantity);
+      if (!(q >= 0)) return res.status(400).json({ error: 'Stock must be 0 or more' });
+      data.quantity = q;
     }
+    if (req.body.category !== undefined) {
+      data.categoryId = await categoryIdFromName(req.body.category);
+    }
+
     const product = await prisma.product.update({
       where: { id: parseInt(req.params.id) },
-      data
+      data,
+      include: PRODUCT_INCLUDE,
     });
-    
+
     if (req.user.role !== 'ADMIN') {
       await prisma.notification.create({
         data: { message: `${req.user.name} updated product: ${product.name}` }
       });
     }
-    
     res.json(product);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -249,9 +356,13 @@ app.get('/api/categories', authenticateToken, async (req, res) => {
 
 app.post('/api/categories', authenticateToken, async (req, res) => {
   try {
-    const category = await prisma.category.create({ data: { name: req.body.name } });
+    const name = String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Category name is required' });
+    const exists = (await prisma.category.findMany()).some(c => c.name.toLowerCase() === name.toLowerCase());
+    if (exists) return res.status(400).json({ error: 'This category already exists' });
+    const category = await prisma.category.create({ data: { name } });
     if (req.user.role !== 'ADMIN') {
-      await prisma.notification.create({ data: { message: `${req.user.name} added a new category: ${req.body.name}` } });
+      await prisma.notification.create({ data: { message: `${req.user.name} added a new category: ${name}` } });
     }
     res.json(category);
   } catch (err) {

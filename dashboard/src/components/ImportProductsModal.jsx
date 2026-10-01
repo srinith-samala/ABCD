@@ -2,10 +2,10 @@ import React, { useState, useRef } from 'react';
 import { API } from '../config';
 
 const TEMPLATE_CSV =
-  'name,category,price,quantity,unit,reorder_level,sku,emoji\n' +
-  'Full Cream Milk,Dairy,55,100,litre,20,MILK-001,🥛\n' +
-  'Basmati Rice,Grocery,120,50,kg,10,RICE-001,🍚\n' +
-  'Good Day Biscuits,Snacks,30,200,pcs,25,BISC-001,🍪\n';
+  'name,category,supplier,cost_price,price,quantity,unit,reorder_level,sku,emoji,description\n' +
+  'Full Cream Milk,Dairy,Dairy Delizia,48,55,100,L,20,MILK-001,🥛,Fresh full cream milk\n' +
+  'Basmati Rice,Grocery,Agro Mart,95,120,50,kg,10,RICE-001,🍚,\n' +
+  'Good Day Biscuits,Snacks,Britannia,22,30,200,pack,25,BISC-001,🍪,\n';
 
 function downloadTemplate() {
   // BOM so Excel shows emoji / ₹ correctly
@@ -77,7 +77,7 @@ export default function ImportProductsModal({ onClose, onDone }) {
           <button onClick={onClose} style={{ border: 'none', background: '#F4F5F7', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 15 }}>✕</button>
         </div>
         <p style={{ fontSize: 13, color: '#8A94A6', marginBottom: 16 }}>
-          Upload a CSV or Excel (.xlsx) file. Required columns: <b>name</b> and <b>price</b>. Optional: category, quantity, unit, reorder_level, sku, emoji.
+          Upload a CSV or Excel (.xlsx) file. Required columns: <b>name</b> and <b>price</b>. Optional: category, supplier, cost_price, quantity, unit, reorder_level, sku, emoji, description.
           Products that already exist (same name or SKU) are skipped, not changed.
         </p>
 
