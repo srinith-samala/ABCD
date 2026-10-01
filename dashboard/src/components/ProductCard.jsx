@@ -1,10 +1,12 @@
 import React from 'react';
 import { getStatus, statusColors } from './ProductDrawer';
 
+const PALETTE = ['#3B82F6', '#16A34A', '#EF4444', '#6C63FF', '#F59E0B', '#14B8A6', '#EC4899'];
+
 export default function ProductCard({ p, onClick }) {
   const status = getStatus(p.quantity, p.reorderLevel);
   const sc = statusColors[status];
-  const catColor = '#6C63FF';
+  const catColor = p.categoryId ? PALETTE[p.categoryId % PALETTE.length] : '#8A94A6';
   return (
         <div onClick={onClick} style={{ background: '#fff', borderRadius: 16, boxShadow: '0 2px 16px rgba(0,0,0,0.06)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.15s, box-shadow 0.15s', borderTop: `3px solid ${catColor}`, position: 'relative' }}
           onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-3px)'; e.currentTarget.style.boxShadow = '0 8px 28px rgba(0,0,0,0.12)'; e.currentTarget.querySelector('.hbtn').style.transform = 'translateY(0)'; e.currentTarget.querySelector('.hbtn').style.opacity = '1'; }}

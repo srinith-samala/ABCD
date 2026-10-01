@@ -4,6 +4,7 @@ import Header from '../components/Header';
 import ProductCard from '../components/ProductCard';
 import ProductDrawer from '../components/ProductDrawer';
 import ImportProductsModal from '../components/ImportProductsModal';
+import ProductFormModal from '../components/ProductFormModal';
 
 export default function Products() {
   const [search, setSearch] = useState('');
@@ -11,6 +12,7 @@ export default function Products() {
   const [selected, setSelected] = useState(null);
   const [products, setProducts] = useState([]);
   const [showImport, setShowImport] = useState(false);
+  const [showForm, setShowForm] = useState(false);
 
   const fetchProducts = async () => {
     try {
@@ -26,28 +28,6 @@ export default function Products() {
   useEffect(() => {
     fetchProducts();
   }, []);
-
-  const handleAddProduct = async () => {
-    const name = window.prompt("Enter product name:");
-    if (!name) return;
-    const cat = window.prompt("Enter category (e.g. Dairy, Grocery):", "Grocery");
-    const price = window.prompt("Enter price:", "10");
-    const stock = window.prompt("Enter opening stock:", "50");
-    
-    try {
-      const res = await fetch(`${API}/api/stock`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}` 
-        },
-        body: JSON.stringify({ name, category: cat, price, openingStock: stock })
-      });
-      if (res.ok) fetchProducts();
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
   const filtered = products
     .filter(p => p.name.toLowerCase().includes(search.toLowerCase()))
@@ -65,7 +45,7 @@ export default function Products() {
             <option value="price">Sort: Price ↓</option>
           </select>
           <button onClick={() => setShowImport(true)} style={{ padding: '9px 18px', borderRadius: 10, background: '#fff', color: '#0F1B2D', border: '1.5px solid #E8EAED', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>⬆ Import CSV / Excel</button>
-          <button onClick={handleAddProduct} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Product</button>
+          <button onClick={() => setShowForm(true)} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Product</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 18 }}>
           {filtered.map(p => <ProductCard key={p.id} p={p} onClick={() => setSelected(p)} />)}
@@ -75,6 +55,7 @@ export default function Products() {
         </div>
       </div>
       <ProductDrawer product={selected} onClose={() => setSelected(null)} fetchProducts={fetchProducts} />
+      {showForm && <ProductFormModal onClose={() => setShowForm(false)} onSaved={fetchProducts} />}
       {showImport && <ImportProductsModal onClose={() => setShowImport(false)} onDone={fetchProducts} />}
     </div>
   );

@@ -28,19 +28,26 @@ export default function Categories() {
     fetchCategories();
   }, []);
 
-  const handleAddCat = async () => {
-    const name = window.prompt('Enter new category name:');
-    if (!name) return;
+  const [showAdd, setShowAdd] = useState(false);
+  const [catName, setCatName] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const handleSaveCat = async () => {
+    if (!catName.trim()) { alert('Category name is required'); return; }
+    setSaving(true);
     try {
       const res = await fetch(`${API}/api/categories`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name: catName })
       });
-      if (res.ok) fetchCategories();
-      else alert('Failed to create category. You may not have admin rights.');
+      if (res.ok) { setShowAdd(false); setCatName(''); fetchCategories(); }
+      else { const e = await res.json().catch(() => ({})); alert(e.error || 'Failed to create category'); }
     } catch (err) {
       console.error(err);
+      alert('Error connecting to server');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -49,7 +56,7 @@ export default function Categories() {
       <Header title="Categories" subtitle="Manage your product categories" />
       <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 20 }}>
-          <button onClick={handleAddCat} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Category</button>
+          <button onClick={() => setShowAdd(true)} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Category</button>
         </div>
         
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 20 }}>
@@ -100,6 +107,29 @@ export default function Categories() {
           )}
         </div>
       </div>
+
+      {showAdd && (
+        <div onClick={() => setShowAdd(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 420, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>Add Category</h3>
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#8A94A6', marginBottom: 6 }}>Category name *</label>
+              <input
+                value={catName}
+                onChange={e => setCatName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSaveCat(); }}
+                autoFocus
+                placeholder="e.g. Dairy"
+                style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #E8EAED', fontSize: 13, fontFamily: 'inherit', outline: 'none' }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowAdd(false)} style={{ padding: '9px 18px', borderRadius: 10, background: '#F4F5F7', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleSaveCat} disabled={saving} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}>{saving ? 'Saving...' : 'Save'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
