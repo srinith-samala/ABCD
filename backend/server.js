@@ -1,5 +1,7 @@
 require('dotenv').config();
 const express = require('express');
+const multer = require('multer');
+const { parseProductsFile, planImport } = require('./importParser');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
@@ -116,6 +118,82 @@ app.post('/api/stock', authenticateToken, async (req, res) => {
     res.json(product);
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+// Bulk import products from a CSV / XLSX file. Existing products (same name or SKU) are skipped, never overwritten.
+app.post('/api/stock/import', authenticateToken, (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'File too large (max 5 MB)' : err.message });
+    }
+    next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    let parsed;
+    try {
+      parsed = await parseProductsFile(req.file.buffer, req.file.originalname);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    const existing = await prisma.product.findMany({ select: { name: true, sku: true } });
+    const { toCreate, skipped } = planImport(parsed.rows, existing);
+
+    let created = 0;
+    if (toCreate.length > 0) {
+      await prisma.$transaction(async (tx) => {
+        const wanted = [...new Set(toCreate.map(r => r.category).filter(Boolean))];
+        let cats = await tx.category.findMany();
+        const lowerSet = new Set(cats.map(c => c.name.toLowerCase()));
+        const missing = [];
+        const seen = new Set();
+        for (const name of wanted) {
+          const l = name.toLowerCase();
+          if (!lowerSet.has(l) && !seen.has(l)) { seen.add(l); missing.push({ name }); }
+        }
+        if (missing.length) {
+          await tx.category.createMany({ data: missing, skipDuplicates: true });
+          cats = await tx.category.findMany();
+        }
+        const idByLower = new Map(cats.map(c => [c.name.toLowerCase(), c.id]));
+
+        const result = await tx.product.createMany({
+          data: toCreate.map(r => ({
+            name: r.name,
+            sku: r.sku,
+            categoryId: r.category ? idByLower.get(r.category.toLowerCase()) ?? null : null,
+            price: r.price,
+            quantity: r.quantity,
+            openingStock: r.quantity,
+            unit: r.unit,
+            reorderLevel: r.reorderLevel,
+            emoji: r.emoji,
+          })),
+        });
+        created = result.count;
+      }, { timeout: 30000 });
+
+      if (req.user.role !== 'ADMIN') {
+        await prisma.notification.create({ data: { message: `${req.user.name} imported ${created} products from a file` } });
+      }
+    }
+
+    res.json({
+      created,
+      skippedCount: skipped.length,
+      skipped: skipped.slice(0, 50),
+      errorCount: parsed.errors.length,
+      errors: parsed.errors.slice(0, 50),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
