@@ -1,8 +1,0 @@
-export const suppliers = [
-  { id: 1, name: 'Fresh Farms Pvt Ltd', category: 'Fruits & Vegetables', contact: 'Ramesh Kumar', phone: '9876543210', rating: 4, lastOrderDate: '12 Jan 2026', lastOrderAmount: 14200, borderColor: '#4CAF50', avatarColor: '#E8F5E9', email: 'ramesh@freshfarms.in', address: '12 MG Road, Pune' },
-  { id: 2, name: 'Amul Direct', category: 'Dairy', contact: 'Priya Singh', phone: '9823456781', rating: 5, lastOrderDate: '13 Jan 2026', lastOrderAmount: 6800, borderColor: '#2196F3', avatarColor: '#E3F2FD', email: 'priya@amuldirect.in', address: 'Anand Dairy Campus, Gujarat' },
-  { id: 3, name: 'Mother Dairy Co', category: 'Dairy & Beverages', contact: 'Anil Mehta', phone: '9812345670', rating: 4, lastOrderDate: '14 Jan 2026', lastOrderAmount: 9400, borderColor: '#673AB7', avatarColor: '#EDE7F6', email: 'anil@motherdairy.in', address: 'Sector 44, Noida' },
-  { id: 4, name: 'Britannia Industries', category: 'Snacks & Bakery', contact: 'Sunita Rao', phone: '9767891234', rating: 3, lastOrderDate: '15 Jan 2026', lastOrderAmount: 5600, borderColor: '#FF9800', avatarColor: '#FFF3E0', email: 'sunita@britannia.in', address: '6th Floor, RMZ, Bengaluru' },
-  { id: 5, name: 'AgriCo Wholesale', category: 'Staples & Grains', contact: 'Vikram Patel', phone: '9654321098', rating: 4, lastOrderDate: '15 Jan 2026', lastOrderAmount: 22100, borderColor: '#9C27B0', avatarColor: '#F3E5F5', email: 'vikram@agrico.in', address: 'APMC Market, Vashi, Mumbai' },
-  { id: 6, name: 'HarvestHub', category: 'Mixed Produce', contact: 'Deepa Nair', phone: '9598765432', rating: 5, lastOrderDate: '16 Jan 2026', lastOrderAmount: 7800, borderColor: '#00BCD4', avatarColor: '#E0F7FA', email: 'deepa@harvesthub.in', address: 'Kochi Trade Center, Kerala' },
-];

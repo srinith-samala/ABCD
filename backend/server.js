@@ -206,6 +206,32 @@ app.post('/api/suppliers', authenticateToken, async (req, res) => {
   }
 });
 
+app.put('/api/suppliers/:id', authenticateToken, async (req, res) => {
+  try {
+    const { name, contact, email, status } = req.body;
+    if (!name || !String(name).trim()) return res.status(400).json({ error: 'Supplier name is required' });
+    const supplier = await prisma.supplier.update({
+      where: { id: parseInt(req.params.id) },
+      data: { name: String(name).trim(), contact, email, status: status || 'Active' }
+    });
+    if (req.user.role !== 'ADMIN') {
+      await prisma.notification.create({ data: { message: `${req.user.name} edited supplier: ${supplier.name}` } });
+    }
+    res.json(supplier);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/suppliers/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    await prisma.supplier.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // --- TRANSACTIONS ROUTES ---
 app.post('/api/transactions', authenticateToken, async (req, res) => {
   try {
@@ -254,7 +280,7 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
 // --- EXPENSE ROUTES ---
 app.get('/api/expenses', authenticateToken, async (req, res) => {
   try {
-    const expenses = await prisma.expense.findMany();
+    const expenses = await prisma.expense.findMany({ orderBy: { expenseDate: 'desc' } });
     res.json(expenses);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -263,14 +289,54 @@ app.get('/api/expenses', authenticateToken, async (req, res) => {
 
 app.post('/api/expenses', authenticateToken, async (req, res) => {
   try {
-    const { title, amount, category } = req.body;
+    const { title, amount, category, date } = req.body;
+    const amt = parseFloat(amount);
+    if (!title || !String(title).trim() || !(amt > 0)) {
+      return res.status(400).json({ error: 'Title and an amount greater than 0 are required' });
+    }
     const expense = await prisma.expense.create({
-      data: { title, amount: parseFloat(amount), category }
+      data: {
+        title: String(title).trim(),
+        amount: amt,
+        category: category || 'General',
+        ...(date ? { expenseDate: new Date(date) } : {})
+      }
     });
     if (req.user.role !== 'ADMIN') {
       await prisma.notification.create({ data: { message: `${req.user.name} added a new expense: ${title}` } });
     }
     res.json(expense);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/expenses/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { title, amount, category, date } = req.body;
+    const amt = parseFloat(amount);
+    if (!title || !String(title).trim() || !(amt > 0)) {
+      return res.status(400).json({ error: 'Title and an amount greater than 0 are required' });
+    }
+    const expense = await prisma.expense.update({
+      where: { id: parseInt(req.params.id) },
+      data: {
+        title: String(title).trim(),
+        amount: amt,
+        category: category || 'General',
+        ...(date ? { expenseDate: new Date(date) } : {})
+      }
+    });
+    res.json(expense);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/expenses/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    await prisma.expense.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

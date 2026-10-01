@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { API } from '../config';
 import Header from '../components/Header';
-import { LineChart, Line, ResponsiveContainer } from 'recharts';
 
 function getStatus(stock, reorder) {
   if (stock === 0) return 'Out of Stock';
@@ -15,7 +14,6 @@ const statusColors = {
   'Out of Stock': { bg: '#FEE2E2', color: '#EF4444', dot: '#EF4444' },
 };
 
-const sparkData = [{ v: 80 }, { v: 120 }, { v: 95 }, { v: 140 }, { v: 110 }, { v: 160 }, { v: 130 }];
 
 function ProductModal({ product, onClose, fetchProducts }) {
   if (!product) return null;
@@ -62,14 +60,6 @@ function ProductModal({ product, onClose, fetchProducts }) {
             <p style={{ fontSize: 11, color: '#8A94A6', marginBottom: 3, textTransform: 'uppercase', fontWeight: 500 }}>Status</p>
             <span className="badge" style={{ background: sc.bg, color: sc.color }}>{status}</span>
           </div>
-        </div>
-        <div style={{ background: '#F4F5F7', borderRadius: 10, padding: '12px 14px', marginBottom: 16 }}>
-          <p style={{ fontSize: 11, color: '#8A94A6', marginBottom: 8, fontWeight: 500 }}>STOCK HISTORY (7 DAYS)</p>
-          <ResponsiveContainer width="100%" height={55}>
-            <LineChart data={sparkData}>
-              <Line type="monotone" dataKey="v" stroke="#2ECC71" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
           <button style={{ flex: 1, padding: '11px 0', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans' }} onClick={async () => {

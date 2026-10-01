@@ -27,34 +27,55 @@ export default function Suppliers() {
     fetchSuppliers();
   }, []);
 
-  const handleAddSupplier = async () => {
-    const name = window.prompt("Enter supplier name:");
-    if (!name) return;
-    const contact = window.prompt("Enter contact person:");
-    const email = window.prompt("Enter email/phone:");
+  const isAdmin = localStorage.getItem('role') === 'ADMIN';
+  const [modal, setModal] = useState(null); // null | { id?, name, contact, email, status }
+  const [saving, setSaving] = useState(false);
 
+  const openAdd = () => setModal({ name: '', contact: '', email: '', status: 'Active' });
+  const openEdit = (s) => setModal({ id: s.id, name: s.name, contact: s.contact || '', email: s.email || '', status: s.status || 'Active' });
+
+  const handleSave = async () => {
+    if (!modal.name.trim()) { alert('Supplier name is required'); return; }
+    setSaving(true);
     try {
-      const res = await fetch(`${API}/api/suppliers`, {
-        method: 'POST',
-        headers: { 
+      const res = await fetch(`${API}/api/suppliers${modal.id ? `/${modal.id}` : ''}`, {
+        method: modal.id ? 'PUT' : 'POST',
+        headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}` 
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        body: JSON.stringify({ name, contact, email })
+        body: JSON.stringify({ name: modal.name, contact: modal.contact, email: modal.email, status: modal.status })
       });
-      if (res.ok) fetchSuppliers();
-      else alert('Failed to add supplier. You may not have admin rights.');
+      if (res.ok) { setModal(null); fetchSuppliers(); }
+      else { const e = await res.json().catch(() => ({})); alert(e.error || 'Failed to save supplier'); }
     } catch (err) {
       console.error(err);
+      alert('Error connecting to server');
+    } finally {
+      setSaving(false);
     }
   };
+
+  const handleDelete = async (s) => {
+    if (!window.confirm(`Delete supplier "${s.name}"?`)) return;
+    try {
+      const res = await fetch(`${API}/api/suppliers/${s.id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      if (res.ok) fetchSuppliers(); else alert('Failed to delete supplier');
+    } catch (err) { console.error(err); }
+  };
+
+  const inputStyle = { width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #E8EAED', fontSize: 13, fontFamily: 'inherit', outline: 'none' };
+  const labelStyle = { display: 'block', fontSize: 12, fontWeight: 600, color: '#8A94A6', marginBottom: 6 };
 
   return (
     <div className="page-fade" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <Header title="Suppliers" subtitle="Manage your vendor and supplier network" />
       <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 20 }}>
-          <button onClick={handleAddSupplier} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Supplier</button>
+          <button onClick={openAdd} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Supplier</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 20 }}>
           {suppliers.map((s, i) => {
@@ -98,7 +119,10 @@ export default function Suppliers() {
                 </div>
 
                 <div style={{ display: 'flex', gap: 10 }}>
-                  <button style={{ flex: 1, padding: '8px 0', borderRadius: 8, background: '#F4F5F7', color: '#0F1B2D', border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Contact</button>
+                  <button onClick={() => openEdit(s)} style={{ flex: 1, padding: '8px 0', borderRadius: 8, background: '#F4F5F7', color: '#0F1B2D', border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>✏️ Edit</button>
+                  {isAdmin && (
+                    <button onClick={() => handleDelete(s)} style={{ flex: 1, padding: '8px 0', borderRadius: 8, background: '#FEE2E2', color: '#EF4444', border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Delete</button>
+                  )}
                 </div>
               </div>
             );
@@ -108,6 +132,37 @@ export default function Suppliers() {
           )}
         </div>
       </div>
+
+      {modal && (
+        <div onClick={() => setModal(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 420, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>{modal.id ? 'Edit Supplier' : 'Add Supplier'}</h3>
+            <div style={{ marginBottom: 14 }}>
+              <label style={labelStyle}>Supplier name *</label>
+              <input style={inputStyle} value={modal.name} onChange={e => setModal({ ...modal, name: e.target.value })} autoFocus />
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={labelStyle}>Contact person</label>
+              <input style={inputStyle} value={modal.contact} onChange={e => setModal({ ...modal, contact: e.target.value })} />
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={labelStyle}>Email / phone</label>
+              <input style={inputStyle} value={modal.email} onChange={e => setModal({ ...modal, email: e.target.value })} />
+            </div>
+            <div style={{ marginBottom: 20 }}>
+              <label style={labelStyle}>Status</label>
+              <select style={inputStyle} value={modal.status} onChange={e => setModal({ ...modal, status: e.target.value })}>
+                <option>Active</option>
+                <option>Inactive</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={() => setModal(null)} style={{ padding: '9px 18px', borderRadius: 10, background: '#F4F5F7', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleSave} disabled={saving} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}>{saving ? 'Saving...' : 'Save'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

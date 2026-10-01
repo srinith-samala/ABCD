@@ -65,8 +65,9 @@ model Expense {
   id        Int      @id @default(autoincrement())
   title     String
   amount    Float
-  category  String   @default("General") // e.g., Light Bill, Rent, etc.
-  createdAt DateTime @default(now())
+  category    String   @default("General") // e.g., Light Bill, Rent, etc.
+  expenseDate DateTime @default(now())
+  createdAt   DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 

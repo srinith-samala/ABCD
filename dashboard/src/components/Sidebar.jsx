@@ -19,6 +19,7 @@ export default function Sidebar() {
 
   const navItems = [...baseNavItems];
   if (role === 'ADMIN') {
+    navItems.splice(navItems.length - 1, 0, { to: '/expenses', label: 'Expenses', emoji: '💸' });
     navItems.push({ to: '/users', label: 'Users', emoji: '👥' });
   }
 

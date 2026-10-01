@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { API } from '../config';
 import Header from '../components/Header';
-import { users } from '../data/users';
 
 const roleStyle = {
   Admin: { bg: '#EEF0FF', color: '#6C63FF' },
