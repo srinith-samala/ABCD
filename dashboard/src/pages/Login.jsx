@@ -41,7 +41,7 @@ export default function Login() {
         <div style={{ maxWidth: 440, width: '100%' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 32 }}>
             <span style={{ fontSize: 44 }}>🛒</span>
-            <span style={{ color: '#fff', fontWeight: 800, fontSize: 32, letterSpacing: '-0.5px' }}>FreshStock</span>
+            <span style={{ color: '#fff', fontWeight: 800, fontSize: 32, letterSpacing: '-0.5px' }}>Takatak</span>
           </div>
           <h2 style={{ color: '#fff', fontSize: 22, fontWeight: 700, lineHeight: 1.4, marginBottom: 32 }}>
             Smart inventory for smarter grocery businesses
@@ -77,7 +77,7 @@ export default function Login() {
               <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#0F1B2D', marginBottom: 6 }}>Email Address</label>
               <input
                 type="email" value={email} onChange={e => setEmail(e.target.value)}
-                placeholder="admin@freshstock.in"
+                placeholder="admin@takatak.in"
                 style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: '1.5px solid #E8EAED', fontSize: 14, fontFamily: 'DM Sans', outline: 'none', color: '#0F1B2D', transition: 'border-color 0.15s' }}
                 onFocus={e => e.target.style.borderColor = '#2ECC71'}
                 onBlur={e => e.target.style.borderColor = '#E8EAED'}

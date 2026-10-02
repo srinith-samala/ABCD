@@ -20,7 +20,7 @@ export default function Settings() {
   const [activeSection, setActiveSection] = useState('General');
   const [autoReorder, setAutoReorder] = useState(true);
   const [notifs, setNotifs] = useState({ lowStock: true, expiry: true, newOrder: true, dailySummary: false });
-  const [storeName, setStoreName] = useState('FreshStock Grocery');
+  const [storeName, setStoreName] = useState('Takatak');
   const [threshold, setThreshold] = useState(20);
   const [saved, setSaved] = useState(false);
 
