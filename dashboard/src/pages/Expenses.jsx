@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { API } from '../config';
 import Header from '../components/Header';
+import Portal from '../components/Portal';
 
 const CATEGORIES = ['Electricity Bill', 'Rent', 'Salaries', 'Water Bill', 'Internet / Phone', 'Transport', 'Maintenance', 'Packaging', 'Other'];
 const PERIODS = [
@@ -222,7 +223,7 @@ export default function Expenses() {
       </div>
 
       {form && (
-        <div onClick={() => setForm(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 }}>
+        <Portal><div onClick={() => setForm(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 }}>
           <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 420, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
             <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>{form.id ? 'Edit Expense' : 'Add Expense'}</h3>
             <div style={{ marginBottom: 14 }}>
@@ -251,7 +252,7 @@ export default function Expenses() {
               <button onClick={handleSave} disabled={saving} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}>{saving ? 'Saving...' : 'Save'}</button>
             </div>
           </div>
-        </div>
+        </div></Portal>
       )}
     </div>
   );

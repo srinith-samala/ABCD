@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { API } from '../config';
+import Portal from './Portal';
 
 const UNITS = ['pcs', 'kg', 'g', 'L', 'ml', 'pack', 'box', 'dozen', 'bottle'];
 const NEW_CAT = '__new__';
@@ -80,7 +81,7 @@ export default function ProductFormModal({ product, onClose, onSaved }) {
   };
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300, padding: 16 }}>
+    <Portal><div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300, padding: 16 }}>
       <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 560, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
         <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>{editing ? 'Edit Product' : 'Add Product'}</h3>
 
@@ -144,6 +145,6 @@ export default function ProductFormModal({ product, onClose, onSaved }) {
           <button onClick={save} disabled={saving} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}>{saving ? 'Saving...' : 'Save'}</button>
         </div>
       </div>
-    </div>
+    </div></Portal>
   );
 }

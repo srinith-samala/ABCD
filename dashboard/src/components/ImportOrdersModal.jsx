@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { API } from '../config';
+import Portal from './Portal';
 
 const TEMPLATE_CSV =
   'date,type,product,quantity,unit,total,category,supplier,supplier_phone,emoji\n' +
@@ -73,7 +74,7 @@ export default function ImportOrdersModal({ onClose, onDone }) {
   );
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 }}>
+    <Portal><div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 }}>
       <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 540, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
           <h3 style={{ fontSize: 17, fontWeight: 700 }}>Import bills / transactions</h3>
@@ -169,6 +170,6 @@ export default function ImportOrdersModal({ onClose, onDone }) {
           </>
         )}
       </div>
-    </div>
+    </div></Portal>
   );
 }

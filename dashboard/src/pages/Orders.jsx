@@ -3,6 +3,7 @@ import { API } from '../config';
 import Header from '../components/Header';
 import ImportOrdersModal from '../components/ImportOrdersModal';
 import { fmtQty } from '../utils';
+import Portal from '../components/Portal';
 
 const statusStyle = {
   SALE: { bg: '#D6F5E3', color: '#16A34A' },
@@ -18,7 +19,7 @@ function OrderDrawer({ order, onClose }) {
   if (!order) return null;
   const step = 2; // Default to delivered for now
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.4)', display: 'flex', justifyContent: 'flex-end' }} onClick={onClose}>
+    <Portal><div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.4)', display: 'flex', justifyContent: 'flex-end' }} onClick={onClose}>
       <div id="printable-invoice" style={{ width: 460, height: '100vh', background: '#fff', overflowY: 'auto', boxShadow: '-4px 0 24px rgba(0,0,0,0.12)', padding: 28 }} onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <div>
@@ -81,7 +82,7 @@ function OrderDrawer({ order, onClose }) {
           <button onClick={() => window.print()} style={{ flex: 1, padding: '11px 0', borderRadius: 10, background: '#F4F5F7', color: '#0F1B2D', border: 'none', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans' }}>Print Invoice</button>
         </div>
       </div>
-    </div>
+    </div></Portal>
   );
 }
 
@@ -178,7 +179,7 @@ export default function Orders() {
         </div>
 
         {showAdd && (
-          <div style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Portal><div style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div style={{ width: 400, background: '#fff', borderRadius: 16, padding: 24 }}>
               <h2 style={{ fontSize: 18, marginBottom: 16 }}>New Order</h2>
               <form onSubmit={handleAddOrder} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -197,7 +198,7 @@ export default function Orders() {
                 </div>
               </form>
             </div>
-          </div>
+          </div></Portal>
         )}
 
         {showImport && <ImportOrdersModal onClose={() => setShowImport(false)} onDone={fetchOrders} />}

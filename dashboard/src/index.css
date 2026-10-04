@@ -49,13 +49,13 @@ body {
 
 /* Page fade-in */
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(6px); }
-  /* `transform: none` (not translateY(0)) - a leftover transform makes position:fixed
-     modals/drawers position themselves against the whole page instead of the screen */
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
+/* Opacity only, no transform and no fill-mode: a leftover transform on the page wrapper
+   would make every position:fixed modal/drawer position itself against the whole tall page. */
 .page-fade {
-  animation: fadeIn 0.2s ease forwards;
+  animation: fadeIn 0.2s ease;
 }
 
 /* Green pulse bar */

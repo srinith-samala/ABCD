@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { API } from '../config';
 import Header from '../components/Header';
+import Portal from '../components/Portal';
 
 const roleStyle = {
   Admin: { bg: '#EEF0FF', color: '#6C63FF' },
@@ -32,7 +33,7 @@ function AddUserModal({ onClose, fetchUsers }) {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+    <Portal><div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
       <div style={{ background: '#fff', borderRadius: 16, padding: 32, width: 420, boxShadow: '0 8px 40px rgba(0,0,0,0.15)' }} onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700 }}>Add New User</h2>
@@ -63,7 +64,7 @@ function AddUserModal({ onClose, fetchUsers }) {
           <button onClick={onClose} style={{ flex: 1, padding: '11px 0', borderRadius: 10, background: '#F4F5F7', color: '#0F1B2D', border: 'none', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans' }}>Cancel</button>
         </div>
       </div>
-    </div>
+    </div></Portal>
   );
 }
 
