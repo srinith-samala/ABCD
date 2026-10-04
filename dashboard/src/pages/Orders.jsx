@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { API } from '../config';
 import Header from '../components/Header';
+import ImportOrdersModal from '../components/ImportOrdersModal';
+import { fmtQty } from '../utils';
 
 const statusStyle = {
   SALE: { bg: '#D6F5E3', color: '#16A34A' },
@@ -8,6 +10,7 @@ const statusStyle = {
 };
 
 const allTabs = ['All', 'SALE', 'PURCHASE'];
+const typeLabel = (t) => (t === 'SALE' ? 'Stock Out' : t === 'PURCHASE' ? 'Stock In' : t);
 
 const timeline = ['Ordered', 'Dispatched', 'Delivered'];
 
@@ -61,7 +64,7 @@ function OrderDrawer({ order, onClose }) {
           <tbody>
             <tr>
               <td>{order.product?.name || 'Unknown'}</td>
-              <td style={{ textAlign: 'right', color: '#8A94A6' }}>{order.quantity}</td>
+              <td style={{ textAlign: 'right', color: '#8A94A6' }}>{fmtQty(order.quantity)}</td>
               <td style={{ textAlign: 'right', color: '#8A94A6' }}>₹{order.product?.price || 0}</td>
               <td style={{ textAlign: 'right', fontWeight: 700 }}>₹{order.total.toLocaleString()}</td>
             </tr>
@@ -120,6 +123,7 @@ export default function Orders() {
   };
 
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [products, setProducts] = useState([]);
   const [newOrder, setNewOrder] = useState({ type: 'SALE', productId: '', quantity: '' });
 
@@ -134,7 +138,7 @@ export default function Orders() {
       const res = await fetch(`${API}/api/transactions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-        body: JSON.stringify({ type: newOrder.type, productId: parseInt(newOrder.productId), quantity: parseInt(newOrder.quantity) })
+        body: JSON.stringify({ type: newOrder.type, productId: parseInt(newOrder.productId), quantity: parseFloat(newOrder.quantity) })
       });
       if (res.ok) {
         setShowAdd(false);
@@ -150,14 +154,14 @@ export default function Orders() {
 
   return (
     <div className="page-fade" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <Header title="Transactions" subtitle="Track and manage all sales and purchases" />
+      <Header title="Transactions" subtitle="Stock in (purchases / received) and stock out (used in kitchen)" />
       <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
         {/* Stat chips */}
         <div style={{ display: 'flex', gap: 14, marginBottom: 24, justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div style={{ display: 'flex', gap: 14 }}>
             {[
-              { label: 'Sales', value: counts.SALE, bg: '#D6F5E3', color: '#16A34A' },
-              { label: 'Purchases', value: counts.PURCHASE, bg: '#EEF0FF', color: '#6C63FF' },
+              { label: 'Stock Out', value: counts.SALE, bg: '#D6F5E3', color: '#16A34A' },
+              { label: 'Stock In', value: counts.PURCHASE, bg: '#EEF0FF', color: '#6C63FF' },
             ].map(({ label, value, bg, color }) => (
               <div key={label} style={{ background: '#fff', borderRadius: 12, padding: '14px 20px', display: 'flex', gap: 12, alignItems: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
                 <span style={{ padding: '4px 10px', borderRadius: 20, background: bg, color, fontSize: 13, fontWeight: 700 }}>{value}</span>
@@ -165,7 +169,12 @@ export default function Orders() {
               </div>
             ))}
           </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            {localStorage.getItem('role') === 'ADMIN' && (
+              <button onClick={() => setShowImport(true)} style={{ padding: '9px 18px', borderRadius: 10, background: '#fff', color: '#0F1B2D', border: '1.5px solid #E8EAED', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>⬆ Import bills (CSV / Excel)</button>
+            )}
           <button onClick={() => setShowAdd(true)} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Order</button>
+          </div>
         </div>
 
         {showAdd && (
@@ -174,14 +183,14 @@ export default function Orders() {
               <h2 style={{ fontSize: 18, marginBottom: 16 }}>New Order</h2>
               <form onSubmit={handleAddOrder} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <select required value={newOrder.type} onChange={e => setNewOrder({...newOrder, type: e.target.value})} style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }}>
-                  <option value="SALE">SALE (Stock Out)</option>
-                  <option value="PURCHASE">PURCHASE (Stock In)</option>
+                  <option value="SALE">STOCK OUT (used / consumed)</option>
+                  <option value="PURCHASE">STOCK IN (purchased / received)</option>
                 </select>
                 <select required value={newOrder.productId} onChange={e => setNewOrder({...newOrder, productId: e.target.value})} style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }}>
                   <option value="" disabled>Select Product...</option>
-                  {products.map(p => <option key={p.id} value={p.id}>{p.name} (Stock: {p.quantity}) - ₹{p.price}</option>)}
+                  {products.map(p => <option key={p.id} value={p.id}>{p.name} (Stock: {fmtQty(p.quantity)}) - ₹{p.price}</option>)}
                 </select>
-                <input required type="number" placeholder="Quantity" value={newOrder.quantity} onChange={e => setNewOrder({...newOrder, quantity: e.target.value})} style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+                <input required type="number" min="0" step="any" placeholder="Quantity" value={newOrder.quantity} onChange={e => setNewOrder({...newOrder, quantity: e.target.value})} style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
                 <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
                   <button type="submit" style={{ flex: 1, padding: 10, background: '#2ECC71', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>Save</button>
                   <button type="button" onClick={() => setShowAdd(false)} style={{ flex: 1, padding: 10, background: '#F4F5F7', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>Cancel</button>
@@ -190,6 +199,8 @@ export default function Orders() {
             </div>
           </div>
         )}
+
+        {showImport && <ImportOrdersModal onClose={() => setShowImport(false)} onDone={fetchOrders} />}
 
         {/* Filter tabs */}
         <div style={{ display: 'flex', gap: 2, background: '#F4F5F7', borderRadius: 10, padding: 4, width: 'fit-content', marginBottom: 20 }}>
@@ -200,7 +211,7 @@ export default function Orders() {
               background: tab === t ? '#fff' : 'transparent',
               color: tab === t ? '#0F1B2D' : '#8A94A6',
               boxShadow: tab === t ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
-            }}>{t}</button>
+            }}>{typeLabel(t)}</button>
           ))}
         </div>
 
@@ -220,10 +231,10 @@ export default function Orders() {
                     <td style={{ padding: '12px 16px', fontWeight: 700, color: '#6C63FF' }}>TRX-{order.id}</td>
                     <td style={{ padding: '12px 16px', color: '#8A94A6' }}>{new Date(order.createdAt).toLocaleDateString()}</td>
                     <td style={{ padding: '12px 16px' }}>
-                      <span className="badge" style={{ background: statusStyle[order.type]?.bg, color: statusStyle[order.type]?.color }}>{order.type}</span>
+                      <span className="badge" style={{ background: statusStyle[order.type]?.bg, color: statusStyle[order.type]?.color }}>{typeLabel(order.type)}</span>
                     </td>
                     <td style={{ padding: '12px 16px', fontWeight: 600 }}>{order.product?.name || 'Unknown'}</td>
-                    <td style={{ padding: '12px 16px', color: '#8A94A6' }}>{order.quantity}</td>
+                    <td style={{ padding: '12px 16px', color: '#8A94A6' }}>{fmtQty(order.quantity)}</td>
                     <td style={{ padding: '12px 16px', fontWeight: 700 }}>₹{order.total.toLocaleString()}</td>
                     <td style={{ padding: '12px 16px' }}>
                       <button style={{ padding: '5px 12px', borderRadius: 6, background: '#F4F5F7', color: '#0F1B2D', border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer' }} onClick={e => { e.stopPropagation(); setSelected(order); }}>View</button>

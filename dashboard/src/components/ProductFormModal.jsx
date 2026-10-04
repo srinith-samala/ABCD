@@ -24,7 +24,6 @@ export default function ProductFormModal({ product, onClose, onSaved }) {
     name: product?.name || '',
     category: product?.category?.name || '',
     supplierId: product?.supplierId ? String(product.supplierId) : '',
-    costPrice: product?.costPrice ?? '',
     price: product?.price ?? '',
     quantity: editing ? product.quantity : '',
     unit: product?.unit || 'pcs',
@@ -46,14 +45,13 @@ export default function ProductFormModal({ product, onClose, onSaved }) {
   const save = async () => {
     const category = f.category === NEW_CAT ? newCat.trim() : f.category;
     if (!f.name.trim()) { alert('Product name is required'); return; }
-    if (f.price === '' || Number(f.price) < 0) { alert('Please enter a valid sell price'); return; }
+    if (f.price !== '' && Number(f.price) < 0) { alert('Price cannot be negative'); return; }
     if (f.category === NEW_CAT && !category) { alert('Please type the new category name'); return; }
 
     const body = {
       name: f.name,
       category,
       supplierId: f.supplierId,
-      costPrice: f.costPrice,
       price: f.price,
       unit: f.unit,
       reorderLevel: f.reorderLevel,
@@ -116,15 +114,8 @@ export default function ProductFormModal({ product, onClose, onSaved }) {
             </select>
           </Field>
 
-          <Field label="Buy price (₹)">
-            <input style={inputStyle} type="number" min="0" step="0.01" value={f.costPrice} onChange={e => set('costPrice', e.target.value)} />
-          </Field>
-          <Field label="Sell price (₹) *">
-            <input style={inputStyle} type="number" min="0" step="0.01" value={f.price} onChange={e => set('price', e.target.value)} />
-          </Field>
-
-          <Field label={editing ? 'Current stock' : 'Opening stock'}>
-            <input style={inputStyle} type="number" min="0" value={f.quantity} onChange={e => set('quantity', e.target.value)} />
+          <Field label="Price per unit (₹)">
+            <input style={inputStyle} type="number" min="0" step="0.01" placeholder="What you pay per kg / ltr / pcs" value={f.price} onChange={e => set('price', e.target.value)} />
           </Field>
           <Field label="Unit">
             <select style={inputStyle} value={f.unit} onChange={e => set('unit', e.target.value)}>
@@ -132,10 +123,14 @@ export default function ProductFormModal({ product, onClose, onSaved }) {
             </select>
           </Field>
 
+          <Field label={editing ? 'Current stock' : 'Opening stock'}>
+            <input style={inputStyle} type="number" min="0" step="any" value={f.quantity} onChange={e => set('quantity', e.target.value)} />
+          </Field>
           <Field label="Reorder level">
             <input style={inputStyle} type="number" min="0" value={f.reorderLevel} onChange={e => set('reorderLevel', e.target.value)} />
           </Field>
-          <Field label="SKU / code">
+
+          <Field label="SKU / code" full>
             <input style={inputStyle} value={f.sku} onChange={e => set('sku', e.target.value)} />
           </Field>
 

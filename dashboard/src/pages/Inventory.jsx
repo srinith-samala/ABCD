@@ -5,6 +5,7 @@ import ProductCard from '../components/ProductCard';
 import ProductDrawer, { getStatus } from '../components/ProductDrawer';
 import ImportProductsModal from '../components/ImportProductsModal';
 import ProductFormModal from '../components/ProductFormModal';
+import { fmtQty } from '../utils';
 
 export default function Inventory() {
   const [tab, setTab] = useState('All Items');
@@ -134,7 +135,7 @@ export default function Inventory() {
                     <tr key={i} style={{ borderBottom: '1px solid #F4F5F7' }}>
                       <td style={{ padding: '12px 16px', color: '#8A94A6' }}>{new Date(row.createdAt).toLocaleDateString()}</td>
                       <td style={{ padding: '12px 16px', fontWeight: 600 }}>{row.product?.name || 'Unknown'}</td>
-                      <td style={{ padding: '12px 16px', fontWeight: 700, color: '#2ECC71' }}>+{row.quantity}</td>
+                      <td style={{ padding: '12px 16px', fontWeight: 700, color: '#2ECC71' }}>+{fmtQty(row.quantity)}</td>
                       <td style={{ padding: '12px 16px', color: '#8A94A6' }}>₹{row.total}</td>
                       <td style={{ padding: '12px 16px', color: '#8A94A6' }}>User ID {row.userId}</td>
                     </tr>

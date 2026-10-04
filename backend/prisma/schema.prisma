@@ -41,8 +41,8 @@ model Product {
   categoryId   Int?
   category     Category?     @relation(fields: [categoryId], references: [id])
   price        Float
-  quantity     Int           @default(0) // Closing stock
-  openingStock Int           @default(0)
+  quantity     Float         @default(0) // Closing stock
+  openingStock Float         @default(0)
   unit         String?       @default("pcs")
   reorderLevel Int           @default(10)
   emoji        String?       @default("📦")
@@ -59,7 +59,7 @@ model Product {
 model Transaction {
   id        Int      @id @default(autoincrement())
   type      String   // "SALE", "PURCHASE"
-  quantity  Int
+  quantity  Float
   total     Float
   productId Int
   product   Product  @relation(fields: [productId], references: [id])

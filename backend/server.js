@@ -1,7 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
-const { parseProductsFile, planImport } = require('./importParser');
+const { parseProductsFile, planImport, mergeDuplicateRows } = require('./importParser');
+const { parseOrdersFile } = require('./purchaseParser');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
@@ -101,8 +102,8 @@ function readProductBody(body, { partial }) {
     data.name = String(body.name).trim();
   }
   if (!partial || has('price')) {
-    const p = Number(body.price);
-    if (blank(body.price) || !(p >= 0)) return { error: 'A valid sell price is required' };
+    const p = blank(body.price) ? 0 : Number(body.price);
+    if (!(p >= 0)) return { error: 'Price must be a number (0 or more)' };
     data.price = p;
   }
   if (has('costPrice')) {
@@ -184,7 +185,7 @@ app.post('/api/stock', authenticateToken, async (req, res) => {
     if (error) return res.status(400).json({ error });
 
     const qtyRaw = req.body.openingStock !== undefined ? req.body.openingStock : req.body.quantity;
-    const qty = blank(qtyRaw) ? 0 : parseInt(qtyRaw);
+    const qty = blank(qtyRaw) ? 0 : Math.round(parseFloat(qtyRaw) * 1000) / 1000;
     if (!(qty >= 0)) return res.status(400).json({ error: 'Stock must be 0 or more' });
 
     const categoryId = await categoryIdFromName(req.body.category);
@@ -205,16 +206,53 @@ app.post('/api/stock', authenticateToken, async (req, res) => {
 });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
-
-// Bulk import products from a CSV / XLSX file. Existing products (same name or SKU) are skipped, never overwritten.
-app.post('/api/stock/import', authenticateToken, (req, res, next) => {
+const uploadFile = (req, res, next) => {
   upload.single('file')(req, res, (err) => {
     if (err) {
       return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'File too large (max 5 MB)' : err.message });
     }
     next();
   });
-}, async (req, res) => {
+};
+
+const round2 = (n) => Math.round(n * 100) / 100;
+const round3 = (n) => Math.round(n * 1000) / 1000;
+
+// Makes sure every supplier in `entries` ([{ name, phone }]) exists. Missing ones are created; existing ones only get
+// their phone filled in when it was blank (nothing else is touched). Returns { idByLower, added, updated }.
+async function syncSuppliers(entries) {
+  const wanted = new Map();
+  for (const e of entries) {
+    if (!e.name) continue;
+    const l = e.name.toLowerCase();
+    if (!wanted.has(l)) wanted.set(l, { name: e.name, phone: e.phone || null });
+    else if (!wanted.get(l).phone && e.phone) wanted.get(l).phone = e.phone;
+  }
+  if (wanted.size === 0) return { idByLower: new Map(), added: 0, updated: 0 };
+
+  const existing = await prisma.supplier.findMany();
+  const byLower = new Map(existing.map(s => [s.name.toLowerCase(), s]));
+  let added = 0;
+  let updated = 0;
+  for (const [l, e] of wanted) {
+    const ex = byLower.get(l);
+    if (!ex) {
+      byLower.set(l, await prisma.supplier.create({ data: { name: e.name, contact: e.phone } }));
+      added++;
+    } else if (e.phone && !(ex.contact && String(ex.contact).trim())) {
+      byLower.set(l, await prisma.supplier.update({ where: { id: ex.id }, data: { contact: e.phone } }));
+      updated++;
+    }
+  }
+  return { idByLower: new Map([...byLower].map(([l, s]) => [l, s.id])), added, updated };
+}
+
+// Bulk import products from a CSV / XLSX file.
+// - new products are created
+// - products that already exist (same name, or same SKU) get the file's quantity ADDED to their stock
+//   (4 L milk today + 2 L in tomorrow's file = 6 L), and optionally recorded as a purchase
+// - `preview=true` changes nothing; it only reports what the real import would do
+app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
@@ -225,73 +263,225 @@ app.post('/api/stock/import', authenticateToken, (req, res, next) => {
       return res.status(400).json({ error: e.message });
     }
 
-    const existing = await prisma.product.findMany({ select: { name: true, sku: true } });
-    const { toCreate, skipped } = planImport(parsed.rows, existing);
+    const preview = String(req.body.preview) === 'true';
+    const recordPurchase = String(req.body.recordPurchase) !== 'false';
 
-    let created = 0;
-    if (toCreate.length > 0) {
-      await prisma.$transaction(async (tx) => {
-        const wanted = [...new Set(toCreate.map(r => r.category).filter(Boolean))];
-        let cats = await tx.category.findMany();
-        const lowerSet = new Set(cats.map(c => c.name.toLowerCase()));
-        const missing = [];
-        const seen = new Set();
-        for (const name of wanted) {
-          const l = name.toLowerCase();
-          if (!lowerSet.has(l) && !seen.has(l)) { seen.add(l); missing.push({ name }); }
-        }
-        if (missing.length) {
-          await tx.category.createMany({ data: missing, skipDuplicates: true });
-          cats = await tx.category.findMany();
-        }
-        const idByLower = new Map(cats.map(c => [c.name.toLowerCase(), c.id]));
+    const { rows, mergedCount } = mergeDuplicateRows(parsed.rows);
+    const existing = await prisma.product.findMany({ select: { id: true, name: true, sku: true, quantity: true, price: true, unit: true } });
+    const { toCreate, addUps, skipped } = planImport(rows, existing);
 
-        // suppliers: match by name (case-insensitive), create the ones that don't exist yet
-        const wantedSup = [...new Set(toCreate.map(r => r.supplier).filter(Boolean))];
-        let sups = await tx.supplier.findMany();
-        const supLower = new Set(sups.map(x => x.name.toLowerCase()));
-        const missingSup = [];
-        const seenSup = new Set();
-        for (const name of wantedSup) {
-          const l = name.toLowerCase();
-          if (!supLower.has(l) && !seenSup.has(l)) { seenSup.add(l); missingSup.push({ name }); }
-        }
-        if (missingSup.length) {
-          await tx.supplier.createMany({ data: missingSup });
-          sups = await tx.supplier.findMany();
-        }
-        const supIdByLower = new Map(sups.map(x => [x.name.toLowerCase(), x.id]));
-
-        const result = await tx.product.createMany({
-          data: toCreate.map(r => ({
-            name: r.name,
-            sku: r.sku,
-            categoryId: r.category ? idByLower.get(r.category.toLowerCase()) ?? null : null,
-            price: r.price,
-            quantity: r.quantity,
-            openingStock: r.quantity,
-            unit: r.unit,
-            reorderLevel: r.reorderLevel,
-            emoji: r.emoji,
-            costPrice: r.costPrice,
-            description: r.description,
-            supplierId: r.supplier ? supIdByLower.get(r.supplier.toLowerCase()) ?? null : null,
-          })),
-        });
-        created = result.count;
-      }, { timeout: 30000 });
-
-      if (req.user.role !== 'ADMIN') {
-        await prisma.notification.create({ data: { message: `${req.user.name} imported ${created} products from a file` } });
-      }
-    }
-
-    res.json({
-      created,
+    const base = {
+      toCreateCount: toCreate.length,
+      newNames: toCreate.slice(0, 50).map(r => r.name),
+      addUpCount: addUps.length,
+      addUps: addUps.slice(0, 60).map(a => ({
+        row: a.row, name: a.product.name, add: a.add, unit: a.product.unit,
+        before: a.product.quantity, after: round3(a.product.quantity + a.add),
+      })),
       skippedCount: skipped.length,
       skipped: skipped.slice(0, 50),
       errorCount: parsed.errors.length,
       errors: parsed.errors.slice(0, 50),
+      mergedCount,
+      ignoredSheets: parsed.ignoredSheets,
+    };
+    if (preview) return res.json({ preview: true, ...base });
+
+    // suppliers + their phone numbers are handled for every row
+    const sup = await syncSuppliers(rows.filter(r => r.supplier).map(r => ({ name: r.supplier, phone: r.supplierPhone })));
+
+    let created = 0;
+    let added = 0;
+    let recordedTotal = 0;
+    if (toCreate.length > 0 || addUps.length > 0) {
+      await prisma.$transaction(async (tx) => {
+        if (toCreate.length > 0) {
+          const wanted = [...new Set(toCreate.map(r => r.category).filter(Boolean))];
+          let cats = await tx.category.findMany();
+          const lowerSet = new Set(cats.map(c => c.name.toLowerCase()));
+          const missing = [];
+          const seen = new Set();
+          for (const name of wanted) {
+            const l = name.toLowerCase();
+            if (!lowerSet.has(l) && !seen.has(l)) { seen.add(l); missing.push({ name }); }
+          }
+          if (missing.length) {
+            await tx.category.createMany({ data: missing, skipDuplicates: true });
+            cats = await tx.category.findMany();
+          }
+          const idByLower = new Map(cats.map(c => [c.name.toLowerCase(), c.id]));
+
+          const result = await tx.product.createMany({
+            data: toCreate.map(r => ({
+              name: r.name,
+              sku: r.sku,
+              categoryId: r.category ? idByLower.get(r.category.toLowerCase()) ?? null : null,
+              price: r.price,
+              quantity: r.quantity,
+              openingStock: r.quantity,
+              unit: r.unit,
+              reorderLevel: r.reorderLevel,
+              emoji: r.emoji,
+              costPrice: r.costPrice,
+              description: r.description,
+              supplierId: r.supplier ? sup.idByLower.get(r.supplier.toLowerCase()) ?? null : null,
+            })),
+          });
+          created = result.count;
+        }
+
+        for (const a of addUps) {
+          const cur = await tx.product.findUnique({ where: { id: a.product.id } });
+          if (!cur) continue;
+          await tx.product.update({ where: { id: cur.id }, data: { quantity: round3(cur.quantity + a.add) } });
+          if (recordPurchase) {
+            const rate = a.rate > 0 ? a.rate : cur.price;
+            const total = round2(a.add * rate);
+            await tx.transaction.create({
+              data: { productId: cur.id, type: 'PURCHASE', quantity: a.add, total, userId: req.user.id },
+            });
+            recordedTotal = round2(recordedTotal + total);
+          }
+          added++;
+        }
+      }, { timeout: 120000, maxWait: 20000 });
+
+      if (req.user.role !== 'ADMIN') {
+        await prisma.notification.create({ data: { message: `${req.user.name} imported a file: ${created} new products, stock added to ${added}` } });
+      }
+    }
+
+    res.json({
+      ...base,
+      created,
+      added,
+      recordedPurchase: recordPurchase,
+      recordedTotal,
+      suppliersAdded: sup.added,
+      suppliersUpdated: sup.updated,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk import purchases (stock in) / sales (stock out) from a CSV / XLSX, e.g. supplier bills.
+// - products are matched by name (case-insensitive); missing products are created for PURCHASE rows
+// - rows that are already recorded (same product, type, qty, total and day) are skipped, so re-uploading is safe
+// - `updateStock=false` records the purchase for the books without changing stock levels
+app.post('/api/transactions/import', authenticateToken, isAdmin, uploadFile, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    let parsed;
+    try {
+      parsed = await parseOrdersFile(req.file.buffer, req.file.originalname);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    const updateStock = String(req.body.updateStock) !== 'false';
+    const rows = parsed.rows;
+    const errors = [...parsed.errors];
+    const skipped = [];
+    const newProducts = [];
+    let created = 0;
+    let totalAmount = 0;
+
+    if (rows.length > 0) {
+      const products = await prisma.product.findMany();
+      const byName = new Map(products.map(p => [p.name.trim().toLowerCase(), p]));
+      const sup = await syncSuppliers(rows.filter(r => r.supplier).map(r => ({ name: r.supplier, phone: r.supplierPhone })));
+
+      // identical transactions already in the database (so the same file can't be added twice)
+      const DAY = 86400000;
+      const times = rows.map(r => r.date.getTime());
+      const existingTx = await prisma.transaction.findMany({
+        where: { createdAt: { gte: new Date(Math.min(...times) - DAY), lte: new Date(Math.max(...times) + DAY) } },
+        select: { productId: true, type: true, quantity: true, total: true, createdAt: true },
+      });
+      const keyOf = (pid, type, qty, total, date) => `${pid}|${type}|${round3(qty)}|${round2(total)}|${date.toISOString().slice(0, 10)}`;
+      const already = new Map();
+      for (const t of existingTx) {
+        const k = keyOf(t.productId, t.type, t.quantity, t.total, new Date(t.createdAt));
+        already.set(k, (already.get(k) || 0) + 1);
+      }
+
+      await prisma.$transaction(async (tx) => {
+        const catIds = new Map((await tx.category.findMany()).map(c => [c.name.toLowerCase(), c.id]));
+        const stockNow = new Map(products.map(p => [p.id, p.quantity]));
+
+        for (const r of rows) {
+          const lower = r.product.toLowerCase();
+          let product = byName.get(lower);
+
+          if (!product) {
+            if (r.type === 'SALE') {
+              errors.push({ row: r.rowNumber, name: r.product, message: 'Product not found (a sale needs an existing product)' });
+              continue;
+            }
+            let categoryId = null;
+            if (r.category) {
+              const cl = r.category.toLowerCase();
+              if (!catIds.has(cl)) catIds.set(cl, (await tx.category.create({ data: { name: r.category } })).id);
+              categoryId = catIds.get(cl);
+            }
+            const unitPrice = round2(r.total / r.quantity);
+            product = await tx.product.create({
+              data: {
+                name: r.product, categoryId, price: unitPrice, costPrice: unitPrice, quantity: 0, openingStock: 0,
+                unit: r.unit, emoji: r.emoji,
+                supplierId: r.supplier ? sup.idByLower.get(r.supplier.toLowerCase()) ?? null : null,
+              },
+            });
+            byName.set(lower, product);
+            stockNow.set(product.id, 0);
+            newProducts.push(product.name);
+          }
+
+          const k = keyOf(product.id, r.type, r.quantity, r.total, r.date);
+          const left = already.get(k) || 0;
+          if (left > 0) {
+            already.set(k, left - 1);
+            skipped.push({ row: r.rowNumber, name: r.product, reason: 'Already recorded' });
+            continue;
+          }
+
+          let current = stockNow.get(product.id);
+          if (updateStock) {
+            if (r.type === 'SALE') {
+              if (current < r.quantity) {
+                errors.push({ row: r.rowNumber, name: r.product, message: `Insufficient stock (have ${current})` });
+                continue;
+              }
+              current = round3(current - r.quantity);
+            } else {
+              current = round3(current + r.quantity);
+            }
+            stockNow.set(product.id, current);
+          }
+
+          await tx.transaction.create({
+            data: { productId: product.id, type: r.type, quantity: r.quantity, total: r.total, userId: req.user.id, createdAt: r.date },
+          });
+          if (updateStock) await tx.product.update({ where: { id: product.id }, data: { quantity: current } });
+          created++;
+          totalAmount = round2(totalAmount + r.total);
+        }
+      }, { timeout: 60000, maxWait: 20000 });
+    }
+
+    res.json({
+      created,
+      totalAmount,
+      newProducts,
+      updateStock,
+      skippedCount: skipped.length,
+      skipped: skipped.slice(0, 50),
+      errorCount: errors.length,
+      errors: errors.slice(0, 50),
+      ignoredSheets: parsed.ignoredSheets,
     });
   } catch (err) {
     console.error(err);
@@ -305,7 +495,7 @@ app.put('/api/stock/:id', authenticateToken, async (req, res) => {
     if (error) return res.status(400).json({ error });
 
     if (req.body.quantity !== undefined) {
-      const q = parseInt(req.body.quantity);
+      const q = Math.round(parseFloat(req.body.quantity) * 1000) / 1000;
       if (!(q >= 0)) return res.status(400).json({ error: 'Stock must be 0 or more' });
       data.quantity = q;
     }
@@ -424,24 +614,28 @@ app.delete('/api/suppliers/:id', authenticateToken, isAdmin, async (req, res) =>
 // --- TRANSACTIONS ROUTES ---
 app.post('/api/transactions', authenticateToken, async (req, res) => {
   try {
-    const { productId, type, quantity } = req.body;
+    const { productId, type } = req.body;
+    const qty = Math.round(parseFloat(req.body.quantity) * 1000) / 1000;
+    if (!(qty > 0)) return res.status(400).json({ error: 'Quantity must be greater than 0' });
+    if (type !== 'SALE' && type !== 'PURCHASE') return res.status(400).json({ error: 'Type must be SALE or PURCHASE' });
+
     const product = await prisma.product.findUnique({ where: { id: parseInt(productId) } });
     if (!product) return res.status(404).json({ error: 'Product not found' });
-    
+
     let newQuantity = product.quantity;
     if (type === 'SALE') {
-      if (product.quantity < parseInt(quantity)) return res.status(400).json({ error: 'Insufficient stock' });
-      newQuantity -= parseInt(quantity);
-    } else if (type === 'PURCHASE') {
-      newQuantity += parseInt(quantity);
+      if (product.quantity < qty) return res.status(400).json({ error: 'Insufficient stock' });
+      newQuantity = Math.round((newQuantity - qty) * 1000) / 1000;
+    } else {
+      newQuantity = Math.round((newQuantity + qty) * 1000) / 1000;
     }
-    
-    const total = quantity * product.price;
-    
+
+    const total = Math.round(qty * product.price * 100) / 100;
+
     const transaction = await prisma.transaction.create({
-      data: { productId: parseInt(productId), type, quantity: parseInt(quantity), total, userId: req.user.id }
+      data: { productId: parseInt(productId), type, quantity: qty, total, userId: req.user.id }
     });
-    
+
     await prisma.product.update({
       where: { id: parseInt(productId) },
       data: { quantity: newQuantity }
@@ -450,7 +644,7 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
     if (req.user.role !== 'ADMIN') {
       await prisma.notification.create({ data: { message: `${req.user.name} logged a ${type} transaction for ${product.name}` } });
     }
-    
+
     res.json(transaction);
   } catch (err) {
     res.status(400).json({ error: err.message });

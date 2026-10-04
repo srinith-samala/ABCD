@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { API } from '../config';
 import ProductFormModal from './ProductFormModal';
+import { fmtQty } from '../utils';
 
 export function getStatus(stock, reorder) {
   if (stock === 0) return 'Out of Stock';
@@ -58,9 +59,8 @@ export default function ProductDrawer({ product, onClose, fetchProducts }) {
   const cells = [
     ['Category', product.category?.name || '—'],
     ['Supplier', product.supplier?.name || '—'],
-    ['Buy Price', money(product.costPrice)],
-    ['Sell Price', money(product.price)],
-    ['Stock', `${product.quantity} ${product.unit || 'pcs'}`],
+    ['Price / Unit', product.price ? `${money(product.price)} / ${product.unit || 'pcs'}` : '—'],
+    ['Stock', `${fmtQty(product.quantity)} ${product.unit || 'pcs'}`],
     ['Reorder Level', product.reorderLevel],
   ];
 
@@ -96,7 +96,7 @@ export default function ProductDrawer({ product, onClose, fetchProducts }) {
               <ResponsiveContainer>
                 <LineChart data={history} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
                   <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#8A94A6' }} />
-                  <Tooltip formatter={(v) => [`${v} ${product.unit || 'pcs'}`, 'Stock']} labelFormatter={(l, p) => p?.[0]?.payload?.date || l} />
+                  <Tooltip formatter={(v) => [`${fmtQty(v)} ${product.unit || 'pcs'}`, 'Stock']} labelFormatter={(l, p) => p?.[0]?.payload?.date || l} />
                   <Line type="monotone" dataKey="stock" stroke="#2ECC71" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>

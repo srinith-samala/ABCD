@@ -1,5 +1,6 @@
 import React from 'react';
 import { getStatus, statusColors } from './ProductDrawer';
+import { fmtQty } from '../utils';
 
 const PALETTE = ['#3B82F6', '#16A34A', '#EF4444', '#6C63FF', '#F59E0B', '#14B8A6', '#EC4899'];
 
@@ -21,7 +22,7 @@ export default function ProductCard({ p, onClick }) {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
               <span style={{ width: 7, height: 7, borderRadius: '50%', background: sc.dot, display: 'inline-block' }} />
-              <span style={{ fontSize: 12, color: '#8A94A6' }}>{p.quantity} in stock</span>
+              <span style={{ fontSize: 12, color: '#8A94A6' }}>{fmtQty(p.quantity)} in stock</span>
             </div>
           </div>
           <div className="hbtn" style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: '#2ECC71', color: '#fff', padding: '10px', textAlign: 'center', fontSize: 12, fontWeight: 600, transform: 'translateY(100%)', opacity: 0, transition: 'transform 0.2s ease, opacity 0.2s' }}>View Details →</div>
