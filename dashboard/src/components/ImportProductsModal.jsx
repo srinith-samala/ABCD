@@ -34,7 +34,7 @@ const btn = (primary, disabled) => ({
 export default function ImportProductsModal({ onClose, onDone }) {
   const [step, setStep] = useState('pick'); // pick -> preview -> done
   const [file, setFile] = useState(null);
-  const [recordPurchase, setRecordPurchase] = useState(true);
+  const [recordPurchase, setRecordPurchase] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [data, setData] = useState(null);
@@ -178,9 +178,9 @@ export default function ImportProductsModal({ onClose, onDone }) {
               <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: '#FAFBFC', borderRadius: 10, padding: '10px 12px', marginBottom: 14, cursor: 'pointer' }}>
                 <input type="checkbox" checked={recordPurchase} onChange={e => setRecordPurchase(e.target.checked)} style={{ marginTop: 3 }} />
                 <span style={{ fontSize: 12.5 }}>
-                  <b>Record the added stock as a purchase</b>
+                  <b>Also create a Stock In order for the added stock (optional)</b>
                   <span style={{ display: 'block', color: '#8A94A6', marginTop: 2 }}>
-                    It shows in the Receiving Log and Purchases total (quantity × price). Untick if you only want to fix the stock number, or if you also import the supplier bills.
+                    Normally leave this OFF: importing inventory only updates stock and does not touch Orders. Tick only if you want it listed under Orders too.
                   </span>
                 </span>
               </label>

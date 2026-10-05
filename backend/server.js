@@ -264,7 +264,7 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
     }
 
     const preview = String(req.body.preview) === 'true';
-    const recordPurchase = String(req.body.recordPurchase) !== 'false';
+    const recordPurchase = String(req.body.recordPurchase) === 'true'; // off by default: importing inventory must NOT create orders
 
     const { rows, mergedCount } = mergeDuplicateRows(parsed.rows);
     const existing = await prisma.product.findMany({ select: { id: true, name: true, sku: true, quantity: true, price: true, unit: true } });
@@ -651,9 +651,97 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
   }
 });
 
+// Edit an order. The stock effect of the OLD order is undone and the NEW one applied, so stock stays correct.
+// `adjustStock=false` edits the record only and leaves product stock untouched.
+app.put('/api/transactions/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const old = await prisma.transaction.findUnique({ where: { id } });
+    if (!old) return res.status(404).json({ error: 'Order not found' });
+
+    const type = req.body.type !== undefined ? req.body.type : old.type;
+    if (type !== 'SALE' && type !== 'PURCHASE') return res.status(400).json({ error: 'Type must be SALE or PURCHASE' });
+    const productId = req.body.productId !== undefined ? parseInt(req.body.productId) : old.productId;
+    const qty = req.body.quantity !== undefined ? round3(parseFloat(req.body.quantity)) : old.quantity;
+    if (!(qty > 0)) return res.status(400).json({ error: 'Quantity must be greater than 0' });
+    const adjustStock = String(req.body.adjustStock) !== 'false';
+
+    const newProduct = await prisma.product.findUnique({ where: { id: productId } });
+    if (!newProduct) return res.status(404).json({ error: 'Product not found' });
+
+    let total;
+    if (req.body.total !== undefined && req.body.total !== '' && req.body.total !== null) {
+      total = round2(parseFloat(req.body.total));
+      if (!(total >= 0)) return res.status(400).json({ error: 'Total must be 0 or more' });
+    } else {
+      total = round2(qty * newProduct.price);
+    }
+    let createdAt = old.createdAt;
+    if (req.body.date) {
+      const d = new Date(req.body.date);
+      if (isNaN(d.getTime())) return res.status(400).json({ error: 'Invalid date' });
+      createdAt = d;
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      if (adjustStock) {
+        // 1) undo old effect
+        const oldProd = await tx.product.findUnique({ where: { id: old.productId } });
+        if (oldProd) {
+          const undone = round3(oldProd.quantity + (old.type === 'SALE' ? old.quantity : -old.quantity));
+          if (undone < 0) throw new Error(`Cannot edit: stock of "${oldProd.name}" would go negative. Tick "Don't change stock" to edit the record only.`);
+          await tx.product.update({ where: { id: oldProd.id }, data: { quantity: undone } });
+        }
+        // 2) apply new effect
+        const cur = await tx.product.findUnique({ where: { id: productId } });
+        const applied = round3(cur.quantity + (type === 'SALE' ? -qty : qty));
+        if (applied < 0) throw new Error(`Insufficient stock for "${cur.name}" (have ${cur.quantity})`);
+        await tx.product.update({ where: { id: productId }, data: { quantity: applied } });
+      }
+      return tx.transaction.update({
+        where: { id },
+        data: { type, productId, quantity: qty, total, createdAt },
+        include: { product: true },
+      });
+    });
+    res.json(updated);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Delete one or many orders: DELETE /api/transactions  body { ids: [1,2,3], revertStock: false }
+// By default stock is NOT changed (so removing wrongly-created orders never touches your inventory).
+// `revertStock=true` also undoes the stock effect of each deleted order.
+app.delete('/api/transactions', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n)).filter(Number.isInteger) : [];
+    if (ids.length === 0) return res.status(400).json({ error: 'No orders selected' });
+    const revertStock = req.body.revertStock === true || String(req.body.revertStock) === 'true';
+
+    const deleted = await prisma.$transaction(async (tx) => {
+      const rows = await tx.transaction.findMany({ where: { id: { in: ids } } });
+      if (revertStock) {
+        for (const t of rows) {
+          const p = await tx.product.findUnique({ where: { id: t.productId } });
+          if (!p) continue;
+          const q = round3(p.quantity + (t.type === 'SALE' ? t.quantity : -t.quantity));
+          if (q < 0) throw new Error(`Cannot reverse stock for "${p.name}" (it would go negative). Delete without changing stock instead.`);
+          await tx.product.update({ where: { id: p.id }, data: { quantity: q } });
+        }
+      }
+      const r = await tx.transaction.deleteMany({ where: { id: { in: rows.map(t => t.id) } } });
+      return r.count;
+    }, { timeout: 60000, maxWait: 20000 });
+    res.json({ deleted, revertStock });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/transactions', authenticateToken, async (req, res) => {
   try {
-    const transactions = await prisma.transaction.findMany({ include: { product: true } });
+    const transactions = await prisma.transaction.findMany({ include: { product: true }, orderBy: { createdAt: 'desc' } });
     res.json(transactions);
   } catch (err) {
     res.status(500).json({ error: err.message });

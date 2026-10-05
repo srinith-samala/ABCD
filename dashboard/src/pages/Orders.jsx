@@ -15,7 +15,7 @@ const typeLabel = (t) => (t === 'SALE' ? 'Stock Out' : t === 'PURCHASE' ? 'Stock
 
 const timeline = ['Ordered', 'Dispatched', 'Delivered'];
 
-function OrderDrawer({ order, onClose }) {
+function OrderDrawer({ order, onClose, onEdit, onDelete, isAdmin }) {
   if (!order) return null;
   const step = 2; // Default to delivered for now
   return (
@@ -77,8 +77,9 @@ function OrderDrawer({ order, onClose }) {
           <span style={{ fontWeight: 800, fontSize: 16, color: '#2ECC71' }}>₹{order.total.toLocaleString()}</span>
         </div>
 
-        <div className="no-print" style={{ display: 'flex', gap: 12, marginTop: 20 }}>
-          <button style={{ flex: 1, padding: '11px 0', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans' }} onClick={() => alert('Editing requires backend implementation')}>Edit Order</button>
+        <div className="no-print" style={{ display: 'flex', gap: 12, marginTop: 20, flexWrap: 'wrap' }}>
+          {isAdmin && <button style={{ flex: 1, padding: '11px 0', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans' }} onClick={() => onEdit(order)}>Edit Order</button>}
+          {isAdmin && <button style={{ flex: 1, padding: '11px 0', borderRadius: 10, background: '#FEE2E2', color: '#B91C1C', border: 'none', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans' }} onClick={() => onDelete([order.id])}>Delete</button>}
           <button onClick={() => window.print()} style={{ flex: 1, padding: '11px 0', borderRadius: 10, background: '#F4F5F7', color: '#0F1B2D', border: 'none', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans' }}>Print Invoice</button>
         </div>
       </div>
@@ -127,11 +128,66 @@ export default function Orders() {
   const [showImport, setShowImport] = useState(false);
   const [products, setProducts] = useState([]);
   const [newOrder, setNewOrder] = useState({ type: 'SALE', productId: '', quantity: '' });
+  const isAdmin = localStorage.getItem('role') === 'ADMIN';
+  const authH = () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` });
 
-  useEffect(() => {
+  // edit
+  const [editing, setEditing] = useState(null); // { id, type, productId, quantity, total, date, adjustStock }
+  const [editErr, setEditErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const openEdit = (o) => {
+    setSelected(null);
+    setEditErr('');
+    setEditing({
+      id: o.id, type: o.type, productId: String(o.productId), quantity: String(o.quantity),
+      total: String(o.total), date: new Date(o.createdAt).toISOString().slice(0, 10), adjustStock: true,
+    });
+  };
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setEditErr('');
+    try {
+      const res = await fetch(`${API}/api/transactions/${editing.id}`, {
+        method: 'PUT', headers: authH(),
+        body: JSON.stringify({
+          type: editing.type, productId: parseInt(editing.productId), quantity: parseFloat(editing.quantity),
+          total: editing.total === '' ? undefined : parseFloat(editing.total), date: editing.date,
+          adjustStock: editing.adjustStock,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setEditErr(data.error || 'Could not save'); return; }
+      setEditing(null);
+      fetchOrders();
+      refreshProducts();
+    } catch (err) { setEditErr(err.message); } finally { setBusy(false); }
+  };
+
+  // delete (one or many)
+  const [checked, setChecked] = useState([]);
+  const [delIds, setDelIds] = useState(null); // array of ids waiting for confirmation
+  const [revertStock, setRevertStock] = useState(false);
+  const [delErr, setDelErr] = useState('');
+  const askDelete = (ids) => { setSelected(null); setDelErr(''); setRevertStock(false); setDelIds(ids); };
+  const confirmDelete = async () => {
+    setBusy(true); setDelErr('');
+    try {
+      const res = await fetch(`${API}/api/transactions`, {
+        method: 'DELETE', headers: authH(), body: JSON.stringify({ ids: delIds, revertStock }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setDelErr(data.error || 'Could not delete'); return; }
+      setDelIds(null); setChecked(c => c.filter(id => !delIds.includes(id)));
+      fetchOrders();
+      refreshProducts();
+    } catch (err) { setDelErr(err.message); } finally { setBusy(false); }
+  };
+
+  const refreshProducts = () => {
     fetch(`${API}/api/stock`, { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } })
-      .then(r => r.json()).then(setProducts).catch(console.error);
-  }, []);
+      .then(r => r.json()).then(d => Array.isArray(d) && setProducts(d)).catch(console.error);
+  };
+  useEffect(() => { refreshProducts(); }, []);
 
   const handleAddOrder = async (e) => {
     e.preventDefault();
@@ -203,6 +259,71 @@ export default function Orders() {
 
         {showImport && <ImportOrdersModal onClose={() => setShowImport(false)} onDone={fetchOrders} />}
 
+        {editing && (
+          <Portal><div style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: 420, maxWidth: '92vw', maxHeight: '92vh', overflowY: 'auto', background: '#fff', borderRadius: 16, padding: 24 }}>
+              <h2 style={{ fontSize: 18, marginBottom: 16 }}>Edit TRX-{editing.id}</h2>
+              <form onSubmit={saveEdit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <label style={{ fontSize: 12, color: '#8A94A6' }}>Type
+                  <select required value={editing.type} onChange={e => setEditing({ ...editing, type: e.target.value })} style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc' }}>
+                    <option value="SALE">STOCK OUT (used / consumed)</option>
+                    <option value="PURCHASE">STOCK IN (purchased / received)</option>
+                  </select>
+                </label>
+                <label style={{ fontSize: 12, color: '#8A94A6' }}>Product
+                  <select required value={editing.productId} onChange={e => setEditing({ ...editing, productId: e.target.value })} style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc' }}>
+                    {products.map(p => <option key={p.id} value={p.id}>{p.name} (Stock: {fmtQty(p.quantity)}) - ₹{p.price}</option>)}
+                  </select>
+                </label>
+                <label style={{ fontSize: 12, color: '#8A94A6' }}>Quantity
+                  <input required type="number" min="0" step="any" value={editing.quantity} onChange={e => setEditing({ ...editing, quantity: e.target.value })} style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box' }} />
+                </label>
+                <label style={{ fontSize: 12, color: '#8A94A6' }}>Total amount (₹)
+                  <input required type="number" min="0" step="any" value={editing.total} onChange={e => setEditing({ ...editing, total: e.target.value })} style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box' }} />
+                </label>
+                <label style={{ fontSize: 12, color: '#8A94A6' }}>Date
+                  <input required type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box' }} />
+                </label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, background: '#FAFBFC', borderRadius: 10, padding: '10px 12px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!editing.adjustStock} onChange={e => setEditing({ ...editing, adjustStock: !e.target.checked })} style={{ marginTop: 3 }} />
+                  <span><b>Don't change stock</b><span style={{ display: 'block', color: '#8A94A6' }}>Only fix this order record. Product stock stays as it is.</span></span>
+                </label>
+                {editErr && <p style={{ background: '#FEE2E2', color: '#B91C1C', fontSize: 13, padding: '10px 12px', borderRadius: 10 }}>{editErr}</p>}
+                <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+                  <button type="submit" disabled={busy} style={{ flex: 1, padding: 10, background: '#2ECC71', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', opacity: busy ? 0.6 : 1 }}>{busy ? 'Saving...' : 'Save changes'}</button>
+                  <button type="button" onClick={() => setEditing(null)} style={{ flex: 1, padding: 10, background: '#F4F5F7', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>Cancel</button>
+                </div>
+              </form>
+            </div>
+          </div></Portal>
+        )}
+
+        {delIds && (
+          <Portal><div style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: 400, maxWidth: '92vw', background: '#fff', borderRadius: 16, padding: 24 }}>
+              <h2 style={{ fontSize: 18, marginBottom: 8 }}>Delete {delIds.length} order{delIds.length > 1 ? 's' : ''}?</h2>
+              <p style={{ fontSize: 13, color: '#8A94A6', marginBottom: 14 }}>This cannot be undone.</p>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, background: '#FAFBFC', borderRadius: 10, padding: '10px 12px', cursor: 'pointer', marginBottom: 14 }}>
+                <input type="checkbox" checked={revertStock} onChange={e => setRevertStock(e.target.checked)} style={{ marginTop: 3 }} />
+                <span><b>Also reverse the stock change</b><span style={{ display: 'block', color: '#8A94A6' }}>Leave unticked to keep inventory exactly as it is (only the order entry is removed).</span></span>
+              </label>
+              {delErr && <p style={{ background: '#FEE2E2', color: '#B91C1C', fontSize: 13, padding: '10px 12px', borderRadius: 10, marginBottom: 12 }}>{delErr}</p>}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button onClick={confirmDelete} disabled={busy} style={{ flex: 1, padding: 10, background: '#DC2626', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', opacity: busy ? 0.6 : 1 }}>{busy ? 'Deleting...' : 'Delete'}</button>
+                <button onClick={() => setDelIds(null)} style={{ flex: 1, padding: 10, background: '#F4F5F7', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>Cancel</button>
+              </div>
+            </div>
+          </div></Portal>
+        )}
+
+        {isAdmin && checked.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#FEF3C7', borderRadius: 10, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
+            <b>{checked.length} selected</b>
+            <button onClick={() => askDelete(checked)} style={{ padding: '6px 14px', borderRadius: 8, background: '#DC2626', color: '#fff', border: 'none', fontWeight: 600, cursor: 'pointer' }}>Delete selected</button>
+            <button onClick={() => setChecked([])} style={{ padding: '6px 14px', borderRadius: 8, background: '#fff', border: '1px solid #E8EAED', fontWeight: 600, cursor: 'pointer' }}>Clear</button>
+          </div>
+        )}
+
         {/* Filter tabs */}
         <div style={{ display: 'flex', gap: 2, background: '#F4F5F7', borderRadius: 10, padding: 4, width: 'fit-content', marginBottom: 20 }}>
           {allTabs.map(t => (
@@ -221,6 +342,13 @@ export default function Orders() {
             <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#FAFBFC' }}>
+                  {isAdmin && (
+                    <th style={{ padding: '12px 16px', borderBottom: '1px solid #E8EAED', width: 36 }}>
+                      <input type="checkbox" title="Select all shown"
+                        checked={filtered.length > 0 && filtered.every(o => checked.includes(o.id))}
+                        onChange={e => setChecked(e.target.checked ? [...new Set([...checked, ...filtered.map(o => o.id)])] : checked.filter(id => !filtered.some(o => o.id === id)))} />
+                    </th>
+                  )}
                   {['TRX ID', 'Date', 'Type', 'Product', 'Qty', 'Total Amount', 'Action'].map(h => (
                     <th key={h} style={{ padding: '12px 16px', whiteSpace: 'nowrap', borderBottom: '1px solid #E8EAED' }}>{h}</th>
                   ))}
@@ -229,6 +357,11 @@ export default function Orders() {
               <tbody>
                 {filtered.map(order => (
                   <tr key={order.id} style={{ cursor: 'pointer', borderBottom: '1px solid #F4F5F7' }} onClick={() => setSelected(order)}>
+                    {isAdmin && (
+                      <td style={{ padding: '12px 16px' }} onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" checked={checked.includes(order.id)} onChange={e => setChecked(e.target.checked ? [...checked, order.id] : checked.filter(id => id !== order.id))} />
+                      </td>
+                    )}
                     <td style={{ padding: '12px 16px', fontWeight: 700, color: '#6C63FF' }}>TRX-{order.id}</td>
                     <td style={{ padding: '12px 16px', color: '#8A94A6' }}>{new Date(order.createdAt).toLocaleDateString()}</td>
                     <td style={{ padding: '12px 16px' }}>
@@ -243,14 +376,14 @@ export default function Orders() {
                   </tr>
                 ))}
                 {filtered.length === 0 && (
-                  <tr><td colSpan="7" style={{ textAlign: 'center', padding: '24px', color: '#8A94A6' }}>No transactions found. Add some stock purchases or sales.</td></tr>
+                  <tr><td colSpan={isAdmin ? 8 : 7} style={{ textAlign: 'center', padding: '24px', color: '#8A94A6' }}>No transactions found. Add some stock purchases or sales.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
         </div>
       </div>
-      <OrderDrawer order={selected} onClose={() => setSelected(null)} />
+      <OrderDrawer order={selected} onClose={() => setSelected(null)} onEdit={openEdit} onDelete={askDelete} isAdmin={isAdmin} />
     </div>
   );
 }
