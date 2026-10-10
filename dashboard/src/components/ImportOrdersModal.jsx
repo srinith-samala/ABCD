@@ -22,7 +22,7 @@ function downloadTemplate() {
 
 const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
-export default function ImportOrdersModal({ onClose, onDone, onSalesReport }) {
+export default function ImportOrdersModal({ onClose, onDone }) {
   const [file, setFile] = useState(null);
   const [updateStock, setUpdateStock] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -59,7 +59,6 @@ export default function ImportOrdersModal({ onClose, onDone, onSalesReport }) {
         body: fd,
       });
       const data = await res.json().catch(() => ({}));
-      if (data.code === 'SALES_REPORT' && onSalesReport) { onSalesReport([file]); return; } // POS daily sales file -> Daily Sales Bills
       if (!res.ok) setError(data.error || 'Import failed');
       else { setResult(data); if (data.created > 0) onDone(); }
     } catch (err) {
