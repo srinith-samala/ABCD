@@ -3,6 +3,10 @@ const express = require('express');
 const multer = require('multer');
 const { parseProductsFile, planImport, mergeDuplicateRows } = require('./importParser');
 const { parseOrdersFile } = require('./purchaseParser');
+const Acc = require('./accounting');
+const repair = require('./repair');
+const { parseSalesBillFile, looksLikeSalesSummary } = require('./salesBillParser');
+const { buildWorkbookBuffer } = require('./exportWorkbook');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
@@ -24,7 +28,8 @@ if (!JWT_SECRET) {
   process.exit(1);
 }
 
-app.get('/', (req, res) => res.json({ status: 'ok' }));
+// API Root
+// app.get('/', (req, res) => res.json({ status: 'ok' }));
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 // --- AUTHENTICATION MIDDLEWARE ---
@@ -215,6 +220,15 @@ const uploadFile = (req, res, next) => {
   });
 };
 
+const uploadFiles = (req, res, next) => {
+  upload.array('files', 40)(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'A file is too large (max 5 MB each)' : err.message });
+    }
+    next();
+  });
+};
+
 const round2 = (n) => Math.round(n * 100) / 100;
 const round3 = (n) => Math.round(n * 1000) / 1000;
 
@@ -373,6 +387,10 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
 app.post('/api/transactions/import', authenticateToken, isAdmin, uploadFile, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    if (await looksLikeSalesSummary(req.file.buffer, req.file.originalname)) {
+      return res.status(422).json({ code: 'SALES_REPORT', error: 'This is a POS Daily Sales Summary (bill-by-bill sales report), not a stock bill. It is imported under "Daily Sales Bills".' });
+    }
 
     let parsed;
     try {
@@ -760,16 +778,21 @@ app.get('/api/expenses', authenticateToken, async (req, res) => {
 
 app.post('/api/expenses', authenticateToken, async (req, res) => {
   try {
-    const { title, amount, category, date } = req.body;
+    const { title, amount, category, date, paymentMode, vendor, group } = req.body;
     const amt = parseFloat(amount);
     if (!title || !String(title).trim() || !(amt > 0)) {
       return res.status(400).json({ error: 'Title and an amount greater than 0 are required' });
     }
+    const auto = Acc.categorize(title);
+    const useAuto = !group || group === 'Auto';
     const expense = await prisma.expense.create({
       data: {
         title: String(title).trim(),
         amount: amt,
-        category: category || 'General',
+        category: useAuto ? ((category && !['General', 'Other', 'Auto'].includes(category)) ? category : auto.category) : (category || 'General'),
+        paymentMode: paymentMode || 'Cash',
+        vendor: vendor || null,
+        group: useAuto ? auto.group : group,
         ...(date ? { expenseDate: new Date(date) } : {})
       }
     });
@@ -784,17 +807,22 @@ app.post('/api/expenses', authenticateToken, async (req, res) => {
 
 app.put('/api/expenses/:id', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const { title, amount, category, date } = req.body;
+    const { title, amount, category, date, paymentMode, vendor, group } = req.body;
     const amt = parseFloat(amount);
     if (!title || !String(title).trim() || !(amt > 0)) {
       return res.status(400).json({ error: 'Title and an amount greater than 0 are required' });
     }
+    const auto = Acc.categorize(title);
+    const useAuto = !group || group === 'Auto';
     const expense = await prisma.expense.update({
       where: { id: parseInt(req.params.id) },
       data: {
         title: String(title).trim(),
         amount: amt,
-        category: category || 'General',
+        category: useAuto ? ((category && !['General', 'Other', 'Auto'].includes(category)) ? category : auto.category) : (category || 'General'),
+        paymentMode: paymentMode || 'Cash',
+        vendor: vendor || null,
+        group: useAuto ? auto.group : group,
         ...(date ? { expenseDate: new Date(date) } : {})
       }
     });
@@ -823,117 +851,232 @@ app.get('/api/notifications', authenticateToken, isAdmin, async (req, res) => {
   }
 });
 
+// --- DAILY SALES BILLS (POS "Detailed Sales Summary", one file per day) ---
+const dayStart = (d) => { const x = new Date(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate())); };
+
+// Saves one parsed day: replaces that day's bills + summary and updates the daily sales register (used by Profit & Loss)
+async function saveSalesDay(parsed, fileName) {
+  const date = dayStart(parsed.date);
+  const s = parsed.summary;
+  return prisma.$transaction(async (tx) => {
+    await tx.salesBill.deleteMany({ where: { billDate: date } });
+    if (parsed.bills.length) {
+      await tx.salesBill.createMany({
+        data: parsed.bills.map(b => ({
+          billDate: date, billNo: b.billNo, billTime: b.billTime || null, gross: b.gross, discount: b.discount, net: b.net,
+          cgst: b.cgst, sgst: b.sgst, exTax: b.exTax, food: b.food, liquor: b.liquor, paymentType: b.paymentType || null,
+          pax: b.pax, tableNo: b.tableNo || null, employee: b.employee || null, discountReason: b.discountReason || null,
+          onlineOrderNo: b.onlineOrderNo || null, hall: b.hall || null,
+        })),
+      });
+    }
+    const details = JSON.stringify({
+      channels: s.channels, departments: s.departments, categories: s.categories, subCategories: s.subCategories,
+      taxCategories: s.taxCategories, alterations: s.alterations, cgst: s.cgst, sgst: s.sgst, rounding: s.rounding,
+      unsettled: s.unsettled, payOut: s.payOut, payIn: s.payIn, cashInDrawer: s.cashInDrawer, paxAmount: s.pax.b,
+    });
+    const report = {
+      sales: s.sales, taxes: s.taxes, grossSale: s.grossSale || parsed.totals.gross, discount: s.discount || parsed.totals.discount,
+      netSale: s.netSale || parsed.totals.net, netExTax: s.netExTax || parsed.totals.exTax, cash: s.cash, digital: s.digital, zomato: s.zomato,
+      bills: parsed.bills.length || s.noOfBills, pax: Math.round(s.pax.a) || parsed.totals.pax, firstBill: s.firstBill, lastBill: s.lastBill,
+      details, fileName: fileName || null,
+    };
+    await tx.salesReport.upsert({ where: { reportDate: date }, create: { reportDate: date, ...report }, update: report });
+
+    // Daily sales register (net of tax). Card / UPI already entered for this day (e.g. from the online-payment sheet) are kept,
+    // because the POS records every payment mode as "Cash".
+    const existing = await tx.dailySales.findUnique({ where: { date } });
+    let { cash, card, upi, zomato } = parsed.daily;
+    if (existing && (existing.card > 0 || existing.upi > 0) && card === 0 && upi === 0) {
+      card = existing.card; upi = existing.upi;
+      cash = Math.max(0, round2(cash - card - upi));
+    }
+    const data = { cash: round2(cash), card: round2(card), upi: round2(upi), zomato: round2(zomato), discount: round2(parsed.daily.discount) };
+    await tx.dailySales.upsert({ where: { date }, create: { date, ...data }, update: data });
+    return { date, bills: parsed.bills.length };
+  }, { timeout: 60000, maxWait: 20000 });
+}
+
+// POST files[]  (+ dryRun=true to only read them and show what would be saved)
+app.post('/api/sales-bills/import', authenticateToken, isAdmin, uploadFiles, async (req, res) => {
+  try {
+    const files = req.files || [];
+    if (!files.length) return res.status(400).json({ error: 'No file uploaded' });
+    const dryRun = String(req.body.dryRun) === 'true';
+    const results = [];
+    const seenDates = new Map();
+    for (const f of files) {
+      const out = { fileName: f.originalname };
+      try {
+        const parsed = await parseSalesBillFile(f.buffer, f.originalname);
+        const key = parsed.date.toISOString().slice(0, 10);
+        if (seenDates.has(key)) { out.ok = false; out.error = `Same date (${key}) as "${seenDates.get(key)}" in this upload`; results.push(out); continue; }
+        seenDates.set(key, f.originalname);
+        const existing = await prisma.salesReport.findUnique({ where: { reportDate: dayStart(parsed.date) } });
+        Object.assign(out, {
+          ok: true, date: key, exists: !!existing, bills: parsed.bills.length, gross: parsed.totals.gross, discount: parsed.totals.discount,
+          net: parsed.totals.net, exTax: parsed.totals.exTax, pax: parsed.totals.pax, warnings: parsed.warnings,
+          daily: parsed.daily, firstBill: parsed.summary.firstBill, lastBill: parsed.summary.lastBill,
+        });
+        if (!dryRun) { await saveSalesDay(parsed, f.originalname); out.saved = true; }
+      } catch (e) {
+        out.ok = false; out.error = e.message;
+      }
+      results.push(out);
+    }
+    res.json({ dryRun, results, saved: results.filter(r => r.saved).length, failed: results.filter(r => !r.ok).length });
+  } catch (err) {
+    console.error('Sales bill import failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Days list (one row per uploaded day) - ?month=YYYY-MM or nothing for all
+app.get('/api/sales-bills', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const m = /^(\d{4})-(\d{2})$/.exec(String(req.query.month || ''));
+    const where = m ? { reportDate: { gte: new Date(Date.UTC(+m[1], +m[2] - 1, 1)), lt: new Date(Date.UTC(+m[1], +m[2], 1)) } } : {};
+    const [reports, all] = await Promise.all([
+      prisma.salesReport.findMany({ where, orderBy: { reportDate: 'desc' } }),
+      prisma.salesReport.findMany({ select: { reportDate: true } }),
+    ]);
+    const months = [...new Set(all.map(r => Acc.monthKey(r.reportDate)))].sort().map(k => ({ key: k, label: Acc.monthLabel(k) }));
+    res.json({ reports: reports.map(r => ({ ...r, details: undefined })), months });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// One day: summary details + every bill
+app.get('/api/sales-bills/day/:date', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) return res.status(400).json({ error: 'Invalid date' });
+    const date = new Date(`${req.params.date}T00:00:00.000Z`);
+    const [report, bills] = await Promise.all([
+      prisma.salesReport.findUnique({ where: { reportDate: date } }),
+      prisma.salesBill.findMany({ where: { billDate: date }, orderBy: { billNo: 'asc' } }),
+    ]);
+    if (!report && !bills.length) return res.status(404).json({ error: 'No bills for this date' });
+    res.json({ report: report ? { ...report, details: report.details ? JSON.parse(report.details) : null } : null, bills });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Delete a whole day (bills + summary + its daily-sales row)
+app.delete('/api/sales-bills/day/:date', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) return res.status(400).json({ error: 'Invalid date' });
+    const date = new Date(`${req.params.date}T00:00:00.000Z`);
+    await prisma.$transaction(async (tx) => {
+      await tx.salesBill.deleteMany({ where: { billDate: date } });
+      await tx.salesReport.deleteMany({ where: { reportDate: date } });
+      const ds = await tx.dailySales.findUnique({ where: { date } });
+      if (ds) {
+        if (ds.card > 0 || ds.upi > 0) await tx.dailySales.update({ where: { date }, data: { cash: 0, zomato: 0, discount: 0 } });
+        else await tx.dailySales.deleteMany({ where: { date } });
+      }
+    });
+    res.json({ deleted: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// --- ACCOUNTING DATA (shared by dashboard, P&L page, Expenses page and the Excel export) ---
+async function loadAccounting() {
+  const [expenses, dailySales, payroll] = await Promise.all([
+    prisma.expense.findMany(),
+    prisma.dailySales.findMany(),
+    prisma.payroll.findMany(),
+  ]);
+  return { expenses, dailySales, payroll };
+}
+// ?month=2026-09 -> that month, ?month=all -> all time, nothing -> the latest month that has sales
+function pickMonth(data, q) {
+  if (q === 'all') return null;
+  const months = Acc.availableMonths(data);
+  if (q && months.includes(q)) return q;
+  return Acc.defaultMonth(data);
+}
+
+app.get('/api/accounts/pnl', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const data = await loadAccounting();
+    const month = pickMonth(data, req.query.month);
+    const pnl = Acc.computePnL(data, month);
+    const { expenseRows, ...slim } = pnl;
+    const months = Acc.availableMonths(data);
+    const idx = month ? months.indexOf(month) : -1;
+    const prev = idx > 0 ? Acc.computePnL(data, months[idx - 1]) : null;
+    res.json({
+      ...slim,
+      months: months.map(m => ({ key: m, label: Acc.monthLabel(m) })),
+      defaultMonth: Acc.defaultMonth(data),
+      previous: prev ? { month: prev.month, label: prev.label, sales: prev.sales.total, totalExpenses: prev.totalExpenses, netProfit: prev.netProfit, margin: prev.margin } : null,
+      series: Acc.monthlySeries(data, 12),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // --- DASHBOARD REPORT DATA ---
 app.get('/api/reports/dashboard', authenticateToken, async (req, res) => {
   try {
-    const products = await prisma.product.findMany();
-    const transactions = await prisma.transaction.findMany();
-    const expenses = await prisma.expense.findMany();
-    
-    const totalSales = transactions.filter(t => t.type === 'SALE').reduce((sum, t) => sum + t.total, 0);
+    const products = await prisma.product.findMany({ select: { quantity: true, openingStock: true, price: true } });
+    const transactions = await prisma.transaction.findMany({ select: { type: true, total: true } });
+    const data = await loadAccounting();
+    const month = pickMonth(data, req.query.month);
+    const pnl = Acc.computePnL(data, month);
     const totalPurchases = transactions.filter(t => t.type === 'PURCHASE').reduce((sum, t) => sum + t.total, 0);
-    const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
-    const profit = totalSales - totalPurchases - totalExpenses;
-    
-    const openingStockValue = products.reduce((sum, p) => sum + (p.openingStock * p.price), 0);
-    const closingStockValue = products.reduce((sum, p) => sum + (p.quantity * p.price), 0);
-    
     res.json({
-      totalSales,
-      totalPurchases,
-      totalExpenses,
-      profit,
-      openingStockValue,
-      closingStockValue
+      month, label: pnl.label,
+      months: Acc.availableMonths(data).map(m => ({ key: m, label: Acc.monthLabel(m) })),
+      totalSales: pnl.sales.total,
+      totalPurchases,                       // stock bought via Orders (not added to expenses - avoids double counting)
+      totalExpenses: pnl.totalExpenses,     // food + packaging + operating expenses + salaries
+      profit: pnl.netProfit,
+      margin: pnl.margin,
+      foodCostPct: pnl.foodCostPct,
+      salaryPct: pnl.salaryPct,
+      openingStockValue: products.reduce((sum, p) => sum + (p.openingStock * p.price), 0),
+      closingStockValue: products.reduce((sum, p) => sum + (p.quantity * p.price), 0),
+      monthly: Acc.monthlySeries(data, 6),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// --- EXPORT STATISTICS ROUTE ---
-app.get('/api/reports/export', authenticateToken, async (req, res) => {
+// --- EXPORT STATISTICS (multi-sheet Excel with native charts) ---
+app.get('/api/reports/export', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const exceljs = require('exceljs');
-    const products = await prisma.product.findMany({ include: { category: true } });
-    const transactions = await prisma.transaction.findMany({ include: { product: true }, orderBy: { createdAt: 'desc' } });
-    const expenses = await prisma.expense.findMany();
-
-    const workbook = new exceljs.Workbook();
-    workbook.creator = 'Store Analytics Dashboard';
-
-    // Helper for styling headers
-    const styleHeader = (worksheet) => {
-      worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2ECC71' } };
-      worksheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
-    };
-
-    // Sheet 1: Dashboard Summary
-    const summarySheet = workbook.addWorksheet('Summary');
-    summarySheet.columns = [
-      { header: 'Metric', key: 'metric', width: 30 },
-      { header: 'Value', key: 'value', width: 20 }
-    ];
-    styleHeader(summarySheet);
-    
-    const totalSales = transactions.filter(t => t.type === 'SALE').reduce((sum, t) => sum + t.total, 0);
-    const totalPurchases = transactions.filter(t => t.type === 'PURCHASE').reduce((sum, t) => sum + t.total, 0);
-    const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
-    summarySheet.addRows([
-      { metric: 'Total Sales', value: `₹${totalSales}` },
-      { metric: 'Total Purchases', value: `₹${totalPurchases}` },
-      { metric: 'Total Expenses', value: `₹${totalExpenses}` },
-      { metric: 'Net Profit', value: `₹${totalSales - totalPurchases - totalExpenses}` }
+    const [products, transactions, expenses, dailySales, payroll, vendorBills] = await Promise.all([
+      prisma.product.findMany({ include: { category: true } }),
+      prisma.transaction.findMany({ include: { product: true } }),
+      prisma.expense.findMany(),
+      prisma.dailySales.findMany(),
+      prisma.payroll.findMany(),
+      prisma.vendorBill.findMany(),
     ]);
-    summarySheet.getColumn(2).alignment = { horizontal: 'right' };
-
-    // Sheet 2: Products
-    const prodSheet = workbook.addWorksheet('Products');
-    prodSheet.columns = [
-      { header: 'ID', key: 'id', width: 10 },
-      { header: 'Name', key: 'name', width: 30 },
-      { header: 'Category', key: 'category', width: 25 },
-      { header: 'Price', key: 'price', width: 15 },
-      { header: 'Opening Stock', key: 'opening', width: 20 },
-      { header: 'Closing Stock', key: 'closing', width: 20 },
-    ];
-    styleHeader(prodSheet);
-    products.forEach(p => prodSheet.addRow({ id: p.id, name: p.name, category: p.category?.name || '', price: `₹${p.price}`, opening: p.openingStock, closing: p.quantity }));
-
-    // Sheet 3: Transactions
-    const txSheet = workbook.addWorksheet('Transactions');
-    txSheet.columns = [
-      { header: 'ID', key: 'id', width: 10 },
-      { header: 'Type', key: 'type', width: 15 },
-      { header: 'Product', key: 'product', width: 30 },
-      { header: 'Quantity', key: 'qty', width: 15 },
-      { header: 'Total Value', key: 'total', width: 15 },
-      { header: 'Date', key: 'date', width: 25 },
-    ];
-    styleHeader(txSheet);
-    transactions.forEach(t => txSheet.addRow({ id: t.id, type: t.type, product: t.product?.name || '', qty: t.quantity, total: `₹${t.total}`, date: t.createdAt.toLocaleString() }));
-
-    // Sheet 4: Expenses
-    const expSheet = workbook.addWorksheet('Expenses');
-    expSheet.columns = [
-      { header: 'ID', key: 'id', width: 10 },
-      { header: 'Title', key: 'title', width: 30 },
-      { header: 'Category', key: 'category', width: 25 },
-      { header: 'Amount', key: 'amount', width: 15 },
-      { header: 'Date', key: 'date', width: 25 },
-    ];
-    styleHeader(expSheet);
-    expenses.forEach(e => expSheet.addRow({ id: e.id, title: e.title, category: e.category, amount: `₹${e.amount}`, date: e.createdAt.toLocaleString() }));
-
-    res.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.attachment('Detailed_Statistics.xlsx');
-    await workbook.xlsx.write(res);
-    res.end();
+    const data = { products, transactions, expenses, dailySales, payroll, vendorBills };
+    const month = pickMonth({ expenses, dailySales, payroll }, req.query.month);
+    const buffer = await buildWorkbookBuffer(data, { month: month || 'all' });
+    const label = (month ? Acc.monthLabel(month) : 'All_Months').replace(' ', '_');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="Takatak_Statistics_${label}.xlsx"`);
+    res.send(buffer);
   } catch (err) {
+    console.error('Export failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
+
+// --- DATA REPAIR (clean up the old Excel import) ---
+app.get('/api/accounts/repair/preview', authenticateToken, isAdmin, async (req, res) => {
+  try { res.json(await repair.preview(prisma)); } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/accounts/repair/apply', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const o = req.body || {};
+    res.json(await repair.apply(prisma, { removeJunk: o.removeJunk !== false, categorize: o.categorize !== false, shiftDates: o.shiftDates !== false, markBillsPaid: o.markBillsPaid !== false }));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // --- USERS ROUTES ---
 app.get('/api/users', authenticateToken, isAdmin, async (req, res) => {
   try {
@@ -942,6 +1085,105 @@ app.get('/api/users', authenticateToken, isAdmin, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// --- NEW PHASE 1 & 2 ROUTES ---
+app.get('/api/dailysales', authenticateToken, async (req, res) => {
+  try {
+    const sales = await prisma.dailySales.findMany({ orderBy: { date: 'desc' } });
+    res.json(sales);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/dailysales', authenticateToken, async (req, res) => {
+  try {
+    const { date, cash, card, upi, zomato, discount } = req.body;
+    const sale = await prisma.dailySales.create({
+      data: {
+        date: new Date(date),
+        cash: parseFloat(cash) || 0,
+        card: parseFloat(card) || 0,
+        upi: parseFloat(upi) || 0,
+        zomato: parseFloat(zomato) || 0,
+        discount: parseFloat(discount) || 0,
+      }
+    });
+    res.json(sale);
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.get('/api/payroll', authenticateToken, async (req, res) => {
+  try {
+    const payroll = await prisma.payroll.findMany({ orderBy: { month: 'desc' } });
+    res.json(payroll);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/payroll', authenticateToken, async (req, res) => {
+  try {
+    const { employeeName, month, presentDays, salary, advance, netPay } = req.body;
+    const pr = await prisma.payroll.create({
+      data: {
+        employeeName,
+        month: new Date(month),
+        presentDays: parseFloat(presentDays) || 0,
+        salary: parseFloat(salary) || 0,
+        advance: parseFloat(advance) || 0,
+        netPay: parseFloat(netPay) || 0,
+      }
+    });
+    res.json(pr);
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.get('/api/vendorbills', authenticateToken, async (req, res) => {
+  try {
+    const bills = await prisma.vendorBill.findMany({ orderBy: { date: 'desc' } });
+    res.json(bills);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/vendorbills', authenticateToken, async (req, res) => {
+  try {
+    const { vendorName, invoiceNo, amount, paid, pending, status, date } = req.body;
+    const bill = await prisma.vendorBill.create({
+      data: {
+        vendorName, invoiceNo,
+        amount: parseFloat(amount) || 0,
+        paid: parseFloat(paid) || 0,
+        pending: parseFloat(pending) || 0,
+        status: status || 'Pending',
+        date: date ? new Date(date) : undefined
+      }
+    });
+    res.json(bill);
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.put('/api/vendorbills/:id', authenticateToken, async (req, res) => {
+  try {
+    const { vendorName, invoiceNo, amount, paid, pending, status, date } = req.body;
+    const bill = await prisma.vendorBill.update({
+      where: { id: parseInt(req.params.id) },
+      data: {
+        vendorName, invoiceNo,
+        amount: parseFloat(amount) || 0,
+        paid: parseFloat(paid) || 0,
+        pending: parseFloat(pending) || 0,
+        status: status || 'Pending',
+        date: date ? new Date(date) : undefined
+      }
+    });
+    res.json(bill);
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+// --- SERVE FRONTEND (FOR PRODUCTION) ---
+const path = require('path');
+const distPath = path.join(__dirname, '../dashboard/dist');
+app.use(express.static(distPath));
+app.get(/(.*)/, (req, res) => {
+  res.sendFile(path.join(distPath, 'index.html'));
 });
 
 const PORT = process.env.PORT || 5000;

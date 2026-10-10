@@ -20,6 +20,9 @@ export default function Sidebar() {
   const navItems = [...baseNavItems];
   if (role === 'ADMIN') {
     navItems.splice(navItems.length - 1, 0, { to: '/expenses', label: 'Expenses', emoji: '💸' });
+    navItems.splice(navItems.length - 1, 0, { to: '/vendorbills', label: 'Vendor Bills', emoji: '🧾' });
+    navItems.splice(navItems.length - 1, 0, { to: '/payroll', label: 'Payroll', emoji: '👨‍🍳' });
+    navItems.splice(navItems.length - 1, 0, { to: '/pandl', label: 'P&L', emoji: '📈' });
     navItems.push({ to: '/users', label: 'Users', emoji: '👥' });
   }
 

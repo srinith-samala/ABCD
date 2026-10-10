@@ -68,13 +68,16 @@ model Transaction {
 }
 
 model Expense {
-  id        Int      @id @default(autoincrement())
-  title     String
-  amount    Float
+  id          Int      @id @default(autoincrement())
+  title       String
+  amount      Float
   category    String   @default("General") // e.g., Light Bill, Rent, etc.
+  paymentMode String   @default("Cash")    // Cash / ICICI / SVC
+  vendor      String?
+  group       String?  // Food, Gas, Rent, Salary, Marketing, Tax
   expenseDate DateTime @default(now())
   createdAt   DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt   DateTime @updatedAt
 }
 
 model Notification {
@@ -82,4 +85,90 @@ model Notification {
   message   String
   isRead    Boolean  @default(false)
   createdAt DateTime @default(now())
+}
+
+model DailySales {
+  id        Int      @id @default(autoincrement())
+  date      DateTime @unique
+  cash      Float    @default(0)
+  card      Float    @default(0)
+  upi       Float    @default(0)
+  zomato    Float    @default(0)
+  discount  Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payroll {
+  id           Int      @id @default(autoincrement())
+  employeeName String
+  month        DateTime
+  presentDays  Float    @default(0)
+  salary       Float    @default(0)
+  advance      Float    @default(0)
+  netPay       Float    @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model VendorBill {
+  id          Int      @id @default(autoincrement())
+  vendorName  String
+  invoiceNo   String?
+  amount      Float
+  paid        Float    @default(0)
+  pending     Float    @default(0)
+  status      String   @default("Pending") // Pending, Paid, Hold
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// One row per day uploaded from the POS "Detailed Sales Summary" (totals, hall split, categories, altered bills ...)
+model SalesReport {
+  id         Int      @id @default(autoincrement())
+  reportDate DateTime @unique
+  sales      Float    @default(0)
+  taxes      Float    @default(0)
+  grossSale  Float    @default(0)
+  discount   Float    @default(0)
+  netSale    Float    @default(0)
+  netExTax   Float    @default(0)
+  cash       Float    @default(0)
+  digital    Float    @default(0)
+  zomato     Float    @default(0)
+  bills      Int      @default(0)
+  pax        Int      @default(0)
+  firstBill  Int?
+  lastBill   Int?
+  details    String?  // JSON: channels, departments, categories, altered bills ...
+  fileName   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// One row per customer bill of a day (the bill-by-bill table of the same POS file)
+model SalesBill {
+  id             Int      @id @default(autoincrement())
+  billDate       DateTime
+  billNo         Int
+  billTime       String?
+  gross          Float    @default(0)
+  discount       Float    @default(0)
+  net            Float    @default(0)
+  cgst           Float    @default(0)
+  sgst           Float    @default(0)
+  exTax          Float    @default(0)
+  food           Float    @default(0)
+  liquor         Float    @default(0)
+  paymentType    String?
+  pax            Int      @default(0)
+  tableNo        String?
+  employee       String?
+  discountReason String?
+  onlineOrderNo  String?
+  hall           String?
+
+  @@unique([billDate, billNo])
+  @@index([billDate])
 }
