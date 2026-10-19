@@ -3,6 +3,8 @@ import { API } from '../config';
 import Header from '../components/Header';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { fmtQty } from '../utils';
+import MonthPicker from '../components/MonthPicker';
+import { downloadStatistics } from '../components/downloadExport';
 
 const KpiCard = ({ label, value, valueColor = '#0F1B2D', icon }) => (
   <div className="card" style={{ flex: 1, minWidth: 0 }}>
@@ -14,6 +16,7 @@ const KpiCard = ({ label, value, valueColor = '#0F1B2D', icon }) => (
   </div>
 );
 
+const isAdmin = () => localStorage.getItem('role') === 'ADMIN';
 const inr = (n) => `₹${Math.abs(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
 const EmptyState = ({ text }) => (
@@ -26,8 +29,12 @@ export default function Dashboard() {
     totalPurchases: 0,
     totalExpenses: 0,
     profit: 0,
-    closingStockValue: 0
+    closingStockValue: 0,
+    months: [],
+    monthly: [],
   });
+  const [month, setMonth] = useState(null); // null = latest month that has data
+  const [exporting, setExporting] = useState(false);
 
   const [products, setProducts] = useState([]);
   const [transactions, setTransactions] = useState([]);
@@ -62,19 +69,25 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const res = await fetch(`${API}/api/reports/dashboard`, {
+        const res = await fetch(`${API}/api/reports/dashboard${month ? `?month=${month}` : ''}`, {
           headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
         });
         const data = await res.json();
         if (res.ok) {
           setStats(data);
+          if (!month) setMonth(data.month || 'all');
         }
       } catch (err) {
         console.error("Failed to load dashboard stats", err);
       }
     };
     fetchStats();
-  }, []);
+  }, [month]);
+
+  const doExport = async () => {
+    setExporting(true);
+    try { await downloadStatistics(month); } catch (err) { console.error(err); alert(err.message || 'Export failed'); } finally { setExporting(false); }
+  };
 
   return (
     <div className="page-fade" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -87,40 +100,52 @@ export default function Dashboard() {
       <Header title="Dashboard" subtitle={`Welcome back, ${localStorage.getItem('name') || 'Admin'} 👋`} />
 
       <div style={{ flex: 1, padding: '24px', overflowY: 'auto' }}>
+        {isAdmin() && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
+            <MonthPicker months={stats.months || []} value={month} onChange={setMonth} />
+            <p style={{ fontSize: 12, color: '#8A94A6' }}>Showing <b>{stats.label || '—'}</b> · same numbers as the P&L page</p>
+          </div>
+        )}
+
         {/* KPI Row */}
         <div style={{ display: 'flex', gap: 18, marginBottom: 24, flexWrap: 'wrap' }}>
           <KpiCard label="Closing Stock Value" value={inr(stats.closingStockValue)} icon="📦" />
-          <KpiCard label="Total Expenses" value={inr(stats.totalExpenses)} valueColor="#F59E0B" icon="🧾" />
-          <KpiCard label="Total Sales" value={inr(stats.totalSales)} icon="🛒" />
-          <KpiCard
-            label={stats.profit < 0 ? 'Total Loss' : 'Total Profit'}
-            value={`${stats.profit < 0 ? '-' : ''}${inr(stats.profit)}`}
-            valueColor={stats.profit < 0 ? '#EF4444' : '#16A34A'}
-            icon="💰"
-          />
-        </div>
-
-        {/* Sales vs Purchases */}
-        <div className="card" style={{ marginBottom: 24 }}>
-          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Sales vs Purchases (last 6 months)</h3>
-          {hasChartData ? (
-            <div style={{ width: '100%', height: 260 }}>
-              <ResponsiveContainer>
-                <BarChart data={monthly} barGap={4}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E8EAED" />
-                  <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#8A94A6' }} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#8A94A6' }} />
-                  <Tooltip formatter={(v) => inr(v)} />
-                  <Legend />
-                  <Bar dataKey="Sales" fill="#2ECC71" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="Purchases" fill="#0F1B2D" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <EmptyState text="No sales or purchases recorded yet." />
+          {isAdmin() && <KpiCard label="Total Costs" value={inr(stats.totalExpenses)} valueColor="#F59E0B" icon="🧾" />}
+          {isAdmin() && <KpiCard label="Total Sales" value={inr(stats.totalSales)} icon="🛒" />}
+          {isAdmin() && (
+            <KpiCard
+              label={stats.profit < 0 ? 'Net Loss' : 'Net Profit'}
+              value={`${stats.profit < 0 ? '-' : ''}${inr(stats.profit)}`}
+              valueColor={stats.profit < 0 ? '#EF4444' : '#16A34A'}
+              icon="💰"
+            />
           )}
         </div>
+
+        {/* Sales vs Costs vs Profit */}
+        {isAdmin() && (
+          <div className="card" style={{ marginBottom: 24 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Sales vs Costs vs Profit (last 6 months)</h3>
+            {(stats.monthly || []).length > 0 ? (
+              <div style={{ width: '100%', height: 260 }}>
+                <ResponsiveContainer>
+                  <BarChart data={(stats.monthly || []).map(m => ({ month: m.label, Sales: m.sales, Costs: m.expenses, Profit: m.profit }))} barGap={4}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E8EAED" />
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#8A94A6' }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#8A94A6' }} />
+                    <Tooltip formatter={(v) => `${v < 0 ? '-' : ''}${inr(v)}`} />
+                    <Legend />
+                    <Bar dataKey="Sales" fill="#2ECC71" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="Costs" fill="#F59E0B" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="Profit" fill="#0F1B2D" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <EmptyState text="No sales or expenses recorded yet." />
+            )}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           {/* Recent activity */}
@@ -153,33 +178,15 @@ export default function Dashboard() {
                 </div>
               ))}
             </div>
-            <button 
-              onClick={async () => {
-                try {
-                  const res = await fetch(`${API}/api/reports/export`, {
-                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-                  });
-                  if (!res.ok) throw new Error("Export failed");
-                  const blob = await res.blob();
-                  const url = window.URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'Detailed_Statistics.xlsx';
-                  document.body.appendChild(a);
-                  a.click();
-                  a.remove();
-                  window.URL.revokeObjectURL(url);
-                } catch (err) {
-                  console.error(err);
-                  alert('Export failed');
-                }
-              }}
+            {isAdmin() && <button 
+              onClick={doExport}
+              disabled={exporting}
               style={{
               width: '100%', padding: '13px 0', borderRadius: 12,
               background: '#0F1B2D', color: '#fff', border: 'none',
               fontSize: 13, fontWeight: 600, cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              fontFamily: 'DM Sans', transition: 'opacity 0.2s',
+              fontFamily: 'DM Sans', transition: 'opacity 0.2s', opacity: exporting ? 0.7 : 1,
             }}
             onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
             onMouseLeave={e => e.currentTarget.style.opacity = '1'}
@@ -188,8 +195,8 @@ export default function Dashboard() {
                 <path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
                 <path d="M2 11h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
               </svg>
-              Export statistics
-            </button>
+              {exporting ? 'Preparing Excel report...' : 'Export statistics (Excel with charts)'}
+            </button>}
           </div>
         </div>
       </div>

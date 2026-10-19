@@ -11,6 +11,9 @@ import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import Users from './pages/Users';
 import Expenses from './pages/Expenses';
+import PandL from './pages/PandL';
+import Payroll from './pages/Payroll';
+import VendorBills from './pages/VendorBills';
 import Login from './pages/Login';
 
 const ProtectedRoute = ({ adminOnly = false }) => {
@@ -51,6 +54,9 @@ export default function App() {
             <Route element={<ProtectedRoute adminOnly={true} />}>
               <Route path="/users" element={<Users />} />
               <Route path="/expenses" element={<Expenses />} />
+              <Route path="/pandl" element={<PandL />} />
+              <Route path="/payroll" element={<Payroll />} />
+              <Route path="/vendorbills" element={<VendorBills />} />
             </Route>
           </Route>
         </Route>

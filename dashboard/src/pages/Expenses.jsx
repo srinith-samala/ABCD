@@ -1,210 +1,219 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { API } from '../config';
 import Header from '../components/Header';
 import Portal from '../components/Portal';
+import MonthPicker from '../components/MonthPicker';
+import RepairBanner from '../components/RepairBanner';
 
-const CATEGORIES = ['Electricity Bill', 'Rent', 'Salaries', 'Water Bill', 'Internet / Phone', 'Transport', 'Maintenance', 'Packaging', 'Other'];
-const PERIODS = [
-  { key: 'all', label: 'All time' },
-  { key: 'month', label: 'This month' },
-  { key: 'last', label: 'Last month' },
-  { key: 'year', label: 'This year' },
-];
+const GROUPS = ['Auto', 'Food', 'Packaging', 'Gas', 'Transport', 'Staff', 'Salary', 'Commission', 'Rent', 'Marketing', 'Utilities', 'Maintenance', 'Tax', 'General'];
+const PAYMENT_MODES = ['Cash', 'ICICI', 'SVC', 'Bank', 'UPI', 'Other'];
 
-const money = (n) => `₹${Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+const money = (n) => `₹${Math.abs(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 const today = () => new Date().toISOString().slice(0, 10);
-
-function inPeriod(dateStr, period) {
-  if (period === 'all') return true;
-  const d = new Date(dateStr);
-  const now = new Date();
-  if (period === 'month') return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
-  if (period === 'last') {
-    const l = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    return d.getFullYear() === l.getFullYear() && d.getMonth() === l.getMonth();
-  }
-  if (period === 'year') return d.getFullYear() === now.getFullYear();
-  return true;
-}
+const monthKeyOf = (d) => { const x = new Date(d); return `${x.getUTCFullYear()}-${String(x.getUTCMonth() + 1).padStart(2, '0')}`; };
 
 export default function Expenses() {
   const [expenses, setExpenses] = useState([]);
-  const [transactions, setTransactions] = useState([]);
-  const [period, setPeriod] = useState('month');
+  const [pnl, setPnl] = useState(null);
+  const [month, setMonth] = useState(null); // null = let the server pick the latest month with data
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState(null); // null | { id?, title, amount, category, date }
+  const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState('');
+  const [groupFilter, setGroupFilter] = useState('');
+  const [modeFilter, setModeFilter] = useState('');
 
-  const authHeaders = () => ({
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${localStorage.getItem('token')}`,
-  });
+  const authHeaders = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` });
 
-  const load = async () => {
+  const load = useCallback(async (m) => {
     try {
-      const [e, t] = await Promise.all([
+      const q = m ? `?month=${m}` : '';
+      const [e, p] = await Promise.all([
         fetch(`${API}/api/expenses`, { headers: authHeaders() }),
-        fetch(`${API}/api/transactions`, { headers: authHeaders() }),
+        fetch(`${API}/api/accounts/pnl${q}`, { headers: authHeaders() }),
       ]);
       if (e.ok) setExpenses(await e.json());
-      if (t.ok) setTransactions(await t.json());
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+      if (p.ok) {
+        const data = await p.json();
+        setPnl(data);
+        if (!m) setMonth(data.month || 'all');
+      }
+    } catch (err) { console.error(err); } finally { setLoading(false); }
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(null); }, [load]);
 
-  const summary = useMemo(() => {
-    const tx = transactions.filter(t => inPeriod(t.createdAt, period));
-    const ex = expenses.filter(e => inPeriod(e.expenseDate || e.createdAt, period));
-    const sales = tx.filter(t => t.type === 'SALE').reduce((s, t) => s + t.total, 0);
-    const purchases = tx.filter(t => t.type === 'PURCHASE').reduce((s, t) => s + t.total, 0);
-    const totalExpenses = ex.reduce((s, e) => s + e.amount, 0);
-    const net = sales - purchases - totalExpenses;
-    const byCategory = {};
-    ex.forEach(e => { byCategory[e.category] = (byCategory[e.category] || 0) + e.amount; });
-    const cats = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
-    return { sales, purchases, totalExpenses, net, cats, list: ex };
-  }, [transactions, expenses, period]);
+  const changeMonth = (m) => { setMonth(m); load(m); };
+  const reload = () => load(month);
 
-  const openAdd = () => setForm({ title: '', amount: '', category: CATEGORIES[0], date: today() });
+  const list = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return expenses.filter(e => {
+      if (month && month !== 'all' && monthKeyOf(e.expenseDate || e.createdAt) !== month) return false;
+      if (groupFilter && (e.group || '') !== groupFilter) return false;
+      if (modeFilter && (e.paymentMode || 'Cash') !== modeFilter) return false;
+      if (q && !`${e.title} ${e.vendor || ''} ${e.category || ''}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [expenses, month, search, groupFilter, modeFilter]);
+  const listTotal = list.reduce((s, e) => s + e.amount, 0);
+
+  const openAdd = () => setForm({ title: '', amount: '', category: '', date: today(), paymentMode: 'Cash', vendor: '', group: 'Auto' });
   const openEdit = (e) => setForm({
-    id: e.id, title: e.title, amount: String(e.amount), category: e.category,
+    id: e.id, title: e.title, amount: String(e.amount), category: e.category || '',
     date: new Date(e.expenseDate || e.createdAt).toISOString().slice(0, 10),
+    paymentMode: e.paymentMode || 'Cash', vendor: e.vendor || '', group: e.group || 'Auto',
   });
 
   const handleSave = async () => {
-    if (!form.title.trim() || !(parseFloat(form.amount) > 0)) {
-      alert('Please enter a title and an amount greater than 0');
-      return;
-    }
+    if (!form.title.trim() || !(parseFloat(form.amount) > 0)) { alert('Please enter a title and an amount greater than 0'); return; }
     setSaving(true);
     try {
-      const res = await fetch(`${API}/api/expenses${form.id ? `/${form.id}` : ''}`, {
-        method: form.id ? 'PUT' : 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify(form),
-      });
-      if (res.ok) { setForm(null); load(); }
+      const res = await fetch(`${API}/api/expenses${form.id ? `/${form.id}` : ''}`, { method: form.id ? 'PUT' : 'POST', headers: authHeaders(), body: JSON.stringify(form) });
+      if (res.ok) { setForm(null); reload(); }
       else { const e = await res.json().catch(() => ({})); alert(e.error || 'Failed to save expense'); }
-    } catch (err) {
-      console.error(err);
-      alert('Error connecting to server');
-    } finally {
-      setSaving(false);
-    }
+    } catch (err) { console.error(err); alert('Error connecting to server'); } finally { setSaving(false); }
   };
 
   const handleDelete = async (e) => {
     if (!window.confirm(`Delete expense "${e.title}"?`)) return;
     try {
       const res = await fetch(`${API}/api/expenses/${e.id}`, { method: 'DELETE', headers: authHeaders() });
-      if (res.ok) load(); else alert('Failed to delete expense');
+      if (res.ok) reload(); else alert('Failed to delete expense');
     } catch (err) { console.error(err); }
   };
 
-  const hasData = summary.sales > 0 || summary.purchases > 0 || summary.totalExpenses > 0;
-  const isProfit = summary.net >= 0;
-  const inputStyle = { width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #E8EAED', fontSize: 13, fontFamily: 'inherit', outline: 'none' };
+  const inputStyle = { width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #E8EAED', fontSize: 13, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' };
   const labelStyle = { display: 'block', fontSize: 12, fontWeight: 600, color: '#8A94A6', marginBottom: 6 };
-  const maxCat = summary.cats.length ? summary.cats[0][1] : 1;
+  const hasData = pnl && (pnl.sales.total > 0 || pnl.totalExpenses > 0);
+  const isProfit = pnl ? pnl.netProfit >= 0 : true;
+  const maxGroup = pnl && pnl.byGroup.length ? pnl.byGroup[0].amount : 1;
+  const noSales = pnl && pnl.sales.total === 0 && pnl.totalExpenses > 0;
 
   return (
     <div className="page-fade" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <Header title="Expenses" subtitle="Track business expenses and see profit or loss" />
+      <Header title="Expenses" subtitle="Month-wise expenses with real profit or loss" />
       <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
 
-        {/* Period + add */}
+        <RepairBanner onDone={reload} />
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 20 }}>
-          <div style={{ display: 'flex', gap: 6, background: '#fff', padding: 4, borderRadius: 12, boxShadow: '0 2px 16px rgba(0,0,0,0.06)' }}>
-            {PERIODS.map(p => (
-              <button key={p.key} onClick={() => setPeriod(p.key)} style={{
-                padding: '7px 14px', borderRadius: 9, border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                background: period === p.key ? '#0F1B2D' : 'transparent',
-                color: period === p.key ? '#fff' : '#8A94A6',
-              }}>{p.label}</button>
-            ))}
-          </div>
+          <MonthPicker months={pnl ? pnl.months : []} value={month} onChange={changeMonth} />
           <button onClick={openAdd} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Expense</button>
         </div>
 
-        {/* Profit / Loss banner */}
-        <div className="card" style={{
-          marginBottom: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12,
-          background: !hasData ? '#fff' : isProfit ? '#D6F5E3' : '#FEE2E2',
-          borderLeft: `5px solid ${!hasData ? '#E8EAED' : isProfit ? '#16A34A' : '#EF4444'}`,
-        }}>
-          <div>
-            <p style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              {!hasData ? 'Profit / Loss' : isProfit ? 'Business is in profit' : 'Business is in loss'}
-            </p>
-            <p style={{ fontSize: 32, fontWeight: 800, marginTop: 4, color: !hasData ? '#8A94A6' : isProfit ? '#16A34A' : '#EF4444' }}>
-              {!hasData ? '—' : `${isProfit ? '+' : '-'}${money(summary.net)}`}
-            </p>
-          </div>
-          <p style={{ fontSize: 12, color: '#8A94A6', maxWidth: 320 }}>
-            {hasData ? 'Net = Sales − Purchases − Expenses' : 'No sales, purchases or expenses recorded for this period yet.'}
-          </p>
-        </div>
-
-        {/* Summary cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 18, marginBottom: 24 }}>
-          {[
-            { label: 'Total Sales', value: summary.sales, icon: '🛒', color: '#16A34A' },
-            { label: 'Purchases (stock bought)', value: summary.purchases, icon: '📦', color: '#0F1B2D' },
-            { label: 'Total Expenses', value: summary.totalExpenses, icon: '🧾', color: '#F59E0B' },
-          ].map(c => (
-            <div key={c.label} className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
-                <p style={{ fontSize: 12, color: '#8A94A6', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</p>
-                <span style={{ fontSize: 20 }}>{c.icon}</span>
-              </div>
-              <p style={{ fontSize: 24, fontWeight: 700, color: c.color }}>{money(c.value)}</p>
+        {/* Profit / Loss banner - same numbers as the P&L page and the Excel export */}
+        {pnl && (
+          <div className="card" style={{
+            marginBottom: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12,
+            background: !hasData ? '#fff' : isProfit ? '#D6F5E3' : '#FEE2E2',
+            borderLeft: `5px solid ${!hasData ? '#E8EAED' : isProfit ? '#16A34A' : '#EF4444'}`,
+          }}>
+            <div>
+              <p style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                {pnl.label} · {!hasData ? 'Profit / Loss' : isProfit ? 'Profit' : 'Loss'}
+              </p>
+              <p style={{ fontSize: 32, fontWeight: 800, marginTop: 4, color: !hasData ? '#8A94A6' : isProfit ? '#16A34A' : '#EF4444' }}>
+                {!hasData ? '—' : `${isProfit ? '+' : '-'}${money(pnl.netProfit)}`}
+                {hasData && pnl.sales.total > 0 && <span style={{ fontSize: 14, fontWeight: 600, marginLeft: 10, color: '#5B6577' }}>{pnl.margin.toFixed(1)}% margin</span>}
+              </p>
             </div>
-          ))}
-        </div>
+            <div style={{ maxWidth: 340 }}>
+              <p style={{ fontSize: 12, color: '#5B6577' }}>
+                Sales − Food & packaging − Other expenses − Salaries. GST and cash withdrawn from bank are not counted as costs.
+              </p>
+              <Link to="/pandl" style={{ fontSize: 12, fontWeight: 700, color: '#16A34A', textDecoration: 'none' }}>Open full P&L →</Link>
+            </div>
+          </div>
+        )}
+        {noSales && <p style={{ background: '#FEF3C7', color: '#92400E', fontSize: 12.5, padding: '10px 14px', borderRadius: 10, marginBottom: 18 }}>No sales are recorded for {pnl.label}, so this month shows only costs. If these payments belong to the previous month, edit their date.</p>}
 
-        <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          {/* Category breakdown */}
-          <div className="card" style={{ flex: '1 1 280px', minWidth: 0 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Expenses by category</h3>
-            {summary.cats.length === 0 && <p style={{ fontSize: 13, color: '#8A94A6' }}>No expenses in this period.</p>}
-            {summary.cats.map(([name, amt]) => (
-              <div key={name} style={{ marginBottom: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 5 }}>
-                  <span style={{ fontWeight: 500 }}>{name}</span>
-                  <span style={{ fontWeight: 600 }}>{money(amt)}</span>
+        {pnl && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 18, marginBottom: 24 }}>
+            {[
+              { label: 'Total Sales', value: pnl.sales.total, icon: '🛒', color: '#16A34A', sub: 'Net of tax' },
+              { label: 'Food & Packaging', value: pnl.cogs, icon: '🍗', color: '#0F1B2D', sub: `${pnl.foodCostPct.toFixed(1)}% of sales` },
+              { label: 'Other Expenses', value: pnl.opex - pnl.salaryLine, icon: '🧾', color: '#F59E0B', sub: 'Gas, rent, marketing, etc.' },
+              { label: 'Salaries', value: pnl.salaryLine, icon: '👨‍🍳', color: '#6C63FF', sub: `${pnl.salaryPct.toFixed(1)}% of sales` },
+            ].map(c => (
+              <div key={c.label} className="card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <p style={{ fontSize: 12, color: '#8A94A6', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</p>
+                  <span style={{ fontSize: 20 }}>{c.icon}</span>
                 </div>
-                <div style={{ height: 6, background: '#F4F5F7', borderRadius: 4 }}>
-                  <div style={{ height: 6, borderRadius: 4, background: '#F59E0B', width: `${(amt / maxCat) * 100}%` }} />
-                </div>
+                <p style={{ fontSize: 24, fontWeight: 700, color: c.color }}>{money(c.value)}</p>
+                <p style={{ fontSize: 11, color: '#8A94A6', marginTop: 4 }}>{c.sub}</p>
               </div>
             ))}
           </div>
+        )}
 
-          {/* Expense list */}
+        <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 280px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <div className="card">
+              <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Where the money went</h3>
+              {(!pnl || pnl.byGroup.length === 0) && <p style={{ fontSize: 13, color: '#8A94A6' }}>No expenses in this period.</p>}
+              {pnl && pnl.byGroup.map(g => (
+                <div key={g.group} style={{ marginBottom: 14 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 5 }}>
+                    <span style={{ fontWeight: 500 }}>{g.group}</span>
+                    <span style={{ fontWeight: 600 }}>{money(g.amount)} <span style={{ color: '#8A94A6', fontWeight: 500, fontSize: 11 }}>· {g.pct.toFixed(1)}%</span></span>
+                  </div>
+                  <div style={{ height: 6, background: '#F4F5F7', borderRadius: 4 }}>
+                    <div style={{ height: 6, borderRadius: 4, background: g.group === 'Food' || g.group === 'Packaging' ? '#2ECC71' : '#F59E0B', width: `${(g.amount / maxGroup) * 100}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+            {pnl && pnl.byMode.length > 0 && (
+              <div className="card">
+                <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Paid via</h3>
+                {pnl.byMode.map(m => (
+                  <div key={m.mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '7px 0', borderTop: '1px solid #F4F5F7' }}>
+                    <span style={{ fontWeight: 500 }}>{m.mode}</span><span style={{ fontWeight: 600 }}>{money(m.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="card" style={{ flex: '2 1 420px', minWidth: 0, overflowX: 'auto' }}>
-            <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>All expenses</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 700 }}>Expenses <span style={{ color: '#8A94A6', fontWeight: 500 }}>({list.length} · {money(listTotal)})</span></h3>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} style={{ ...inputStyle, width: 130, padding: '7px 10px' }} />
+                <select value={groupFilter} onChange={e => setGroupFilter(e.target.value)} style={{ ...inputStyle, width: 'auto', padding: '7px 10px' }}>
+                  <option value="">All heads</option>
+                  {GROUPS.filter(g => g !== 'Auto').map(g => <option key={g}>{g}</option>)}
+                </select>
+                <select value={modeFilter} onChange={e => setModeFilter(e.target.value)} style={{ ...inputStyle, width: 'auto', padding: '7px 10px' }}>
+                  <option value="">All modes</option>
+                  {PAYMENT_MODES.map(g => <option key={g}>{g}</option>)}
+                </select>
+              </div>
+            </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ textAlign: 'left', color: '#8A94A6', fontSize: 11, textTransform: 'uppercase' }}>
                   <th style={{ padding: '8px 6px' }}>Date</th>
                   <th style={{ padding: '8px 6px' }}>Title</th>
-                  <th style={{ padding: '8px 6px' }}>Category</th>
+                  <th style={{ padding: '8px 6px' }}>Head</th>
                   <th style={{ padding: '8px 6px', textAlign: 'right' }}>Amount</th>
                   <th style={{ padding: '8px 6px' }}></th>
                 </tr>
               </thead>
               <tbody>
-                {summary.list.map(e => (
+                {list.map(e => (
                   <tr key={e.id} style={{ borderTop: '1px solid #E8EAED' }}>
-                    <td style={{ padding: '10px 6px', color: '#8A94A6', whiteSpace: 'nowrap' }}>{new Date(e.expenseDate || e.createdAt).toLocaleDateString()}</td>
-                    <td style={{ padding: '10px 6px', fontWeight: 500 }}>{e.title}</td>
+                    <td style={{ padding: '10px 6px', color: '#8A94A6', whiteSpace: 'nowrap' }}>{new Date(e.expenseDate || e.createdAt).toLocaleDateString('en-GB', { timeZone: 'UTC' })}</td>
+                    <td style={{ padding: '10px 6px', fontWeight: 500 }}>
+                      {e.title}
+                      {e.vendor && <div style={{ fontSize: 10, color: '#8A94A6', marginTop: 2 }}>{e.vendor}</div>}
+                    </td>
                     <td style={{ padding: '10px 6px' }}>
-                      <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#FEF3C7', color: '#92400E', fontWeight: 600 }}>{e.category}</span>
+                      <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#FEF3C7', color: '#92400E', fontWeight: 600 }}>{e.group || e.category}</span>
+                      <div style={{ fontSize: 10, color: '#8A94A6', marginTop: 4 }}>{e.group && e.category && e.category !== e.group ? `${e.category} · ` : ''}{e.paymentMode || 'Cash'}</div>
                     </td>
                     <td style={{ padding: '10px 6px', textAlign: 'right', fontWeight: 600 }}>{money(e.amount)}</td>
                     <td style={{ padding: '10px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -213,8 +222,8 @@ export default function Expenses() {
                     </td>
                   </tr>
                 ))}
-                {!loading && summary.list.length === 0 && (
-                  <tr><td colSpan="5" style={{ textAlign: 'center', padding: 28, color: '#8A94A6' }}>No expenses for this period. Click "Add Expense" to record one.</td></tr>
+                {!loading && list.length === 0 && (
+                  <tr><td colSpan="5" style={{ textAlign: 'center', padding: 28, color: '#8A94A6' }}>No expenses match. Change the period or filters, or click "Add Expense".</td></tr>
                 )}
               </tbody>
             </table>
@@ -224,23 +233,36 @@ export default function Expenses() {
 
       {form && (
         <Portal><div onClick={() => setForm(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 }}>
-          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 420, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 440, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
             <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>{form.id ? 'Edit Expense' : 'Add Expense'}</h3>
             <div style={{ marginBottom: 14 }}>
-              <label style={labelStyle}>Category</label>
-              <select style={inputStyle} value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>
-                {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-                {!CATEGORIES.includes(form.category) && <option>{form.category}</option>}
-              </select>
-            </div>
-            <div style={{ marginBottom: 14 }}>
               <label style={labelStyle}>Title *</label>
-              <input style={inputStyle} placeholder="e.g. March electricity bill" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} autoFocus />
+              <input style={inputStyle} placeholder="e.g. Gas cylinders, Chicken, Rent" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} autoFocus />
+            </div>
+            <div style={{ display: 'flex', gap: 12, marginBottom: 14 }}>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Head (P&L group)</label>
+                <select style={inputStyle} value={form.group} onChange={e => setForm({ ...form, group: e.target.value })}>
+                  {GROUPS.map(g => <option key={g} value={g}>{g === 'Auto' ? 'Auto (detect from title)' : g}</option>)}
+                  {!GROUPS.includes(form.group) && <option>{form.group}</option>}
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Vendor (optional)</label>
+                <input style={inputStyle} placeholder="e.g. PAYAL" value={form.vendor} onChange={e => setForm({ ...form, vendor: e.target.value })} />
+              </div>
             </div>
             <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
               <div style={{ flex: 1 }}>
                 <label style={labelStyle}>Amount (₹) *</label>
                 <input style={inputStyle} type="number" min="0" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Paid via</label>
+                <select style={inputStyle} value={form.paymentMode} onChange={e => setForm({ ...form, paymentMode: e.target.value })}>
+                  {PAYMENT_MODES.map(p => <option key={p}>{p}</option>)}
+                  {!PAYMENT_MODES.includes(form.paymentMode) && <option>{form.paymentMode}</option>}
+                </select>
               </div>
               <div style={{ flex: 1 }}>
                 <label style={labelStyle}>Date</label>
