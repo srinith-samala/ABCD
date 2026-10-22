@@ -18,9 +18,10 @@ export default function ImportSalesBillsModal({ onClose, onDone, initialFiles = 
   const addFiles = (list) => {
     setError(''); setPreview(null); setSaved(null);
     const picked = Array.from(list || []);
-    const bad = picked.filter(f => !f.name.toLowerCase().endsWith('.xlsx'));
-    if (bad.length) { setError('Only .xlsx files are supported (the Excel export from the POS).'); }
-    const ok = picked.filter(f => f.name.toLowerCase().endsWith('.xlsx') && f.size <= 5 * 1024 * 1024);
+    const isExcel = (f) => /\.xlsx?$/i.test(f.name);
+    if (picked.some(f => !isExcel(f))) { setError('Only Excel files (.xlsx or .xls) are supported - the file exported from the POS.'); }
+    else if (picked.some(f => f.size > 5 * 1024 * 1024)) { setError('A file is larger than 5 MB.'); }
+    const ok = picked.filter(f => isExcel(f) && f.size <= 5 * 1024 * 1024);
     setFiles(prev => {
       const names = new Set(prev.map(f => f.name + f.size));
       return [...prev, ...ok.filter(f => !names.has(f.name + f.size))].slice(0, 40);
@@ -35,7 +36,7 @@ export default function ImportSalesBillsModal({ onClose, onDone, initialFiles = 
       fd.append('dryRun', String(dryRun));
       const res = await fetch(`${API}/api/sales-bills/import`, { method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }, body: fd });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(data.error || 'Upload failed'); return; }
+      if (!res.ok) { setError(data.error || `Upload failed (server answered ${res.status}). Please make sure the latest backend is deployed.`); return; }
       if (dryRun) setPreview(data); else { setSaved(data); onDone && onDone(); }
     } catch (e) { setError('Error connecting to server'); } finally { setBusy(false); }
   };
@@ -65,7 +66,7 @@ export default function ImportSalesBillsModal({ onClose, onDone, initialFiles = 
                 onDrop={e => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }} style={dropStyle}>
                 <div style={{ fontSize: 28, marginBottom: 4 }}>🧾</div>
                 <p style={{ fontSize: 13, color: '#8A94A6' }}>Click to choose Excel files, or drag &amp; drop them here</p>
-                <input ref={inputRef} type="file" accept=".xlsx" multiple style={{ display: 'none' }} onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
+                <input ref={inputRef} type="file" accept=".xlsx,.xls" multiple style={{ display: 'none' }} onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
               </div>
 
               {files.length > 0 && !preview && (

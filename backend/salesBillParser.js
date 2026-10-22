@@ -2,6 +2,7 @@
 //  - top block: totals, tax, discount, cash / zomato, hall split, categories, altered bills, PAX ...
 //  - bottom table: one row per bill (Bill No, Gross, Disc., Net, CGST, SGST, Ex.Tax, Time, Payment Type, Hall ...)
 const ExcelJS = require('exceljs');
+const XLSX = require('xlsx');
 
 const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
 const MAX_BILLS = 2000;
@@ -15,7 +16,7 @@ const text = (v) => {
     if (v.text !== undefined) return text(v.text);
     return '';
   }
-  return String(v).replace(/_x000D_/g, ' ').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return String(v).replace(/_x000d_/gi, ' ').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
 };
 const norm = (s) => text(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 const num = (v) => {
@@ -62,6 +63,10 @@ const BILL_COLS = {
 };
 
 function timeText(v) {
+  if (typeof v === 'number' && v >= 0 && v < 1) { // Excel stores a time as a fraction of a day
+    const mins = Math.round(v * 1440);
+    return `${String(Math.floor(mins / 60) % 24).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+  }
   if (v instanceof Date) return `${String(v.getUTCHours()).padStart(2, '0')}:${String(v.getUTCMinutes()).padStart(2, '0')}`;
   const s = text(v);
   const m = /^(\d{1,2}):(\d{2})/.exec(s);
@@ -77,25 +82,31 @@ function bucketOf(paymentType) {
   return 'cash';
 }
 
+// Old Excel (.xls) files are converted to .xlsx first
+function toXlsxBuffer(buffer, filename) {
+  const isOle = buffer.length > 8 && buffer[0] === 0xD0 && buffer[1] === 0xCF && buffer[2] === 0x11 && buffer[3] === 0xE0;
+  if (isOle || /\.xls$/i.test(filename || '')) {
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  }
+  return buffer;
+}
+
 async function loadFirstSheet(buffer, filename) {
+  if (/\.csv$/i.test(String(filename || ''))) throw new Error('Please upload the Excel file (.xlsx or .xls) exported from the POS');
   const wb = new ExcelJS.Workbook();
-  if (String(filename || '').toLowerCase().endsWith('.csv')) throw new Error('Please upload the .xlsx file exported from the POS');
-  await wb.xlsx.load(buffer);
-  // the sheet that holds the report (others are usually empty "Sheet2/Sheet3")
-  const ws = wb.worksheets.find(w => {
-    for (let r = 1; r <= Math.min(8, w.rowCount); r++) {
-      const row = w.getRow(r).values;
-      if (row.some(c => /detailed sales summary/i.test(text(c)))) return true;
-    }
-    return false;
-  });
-  return ws || null;
+  await wb.xlsx.load(toXlsxBuffer(buffer, filename));
+  const scan = (w, test) => { for (let r = 1; r <= Math.min(60, w.rowCount); r++) { if (test(w.getRow(r).values)) return true; } return false; };
+  // 1) the sheet titled "DETAILED SALES SUMMARY"  2) any sheet that has the Bill No / Gross / Net table
+  const byTitle = wb.worksheets.find(w => scan(w, row => row.some(c => /detailed\s*sales\s*summary/i.test(text(c)))));
+  if (byTitle) return byTitle;
+  return wb.worksheets.find(w => scan(w, row => { const n = row.map(norm); return n.includes('billno') && n.some(x => x.startsWith('gross')) && n.some(x => x.startsWith('net')); })) || null;
 }
 
 // Cheap check used by the old "Import stock orders" screen to redirect this kind of file
 async function looksLikeSalesSummary(buffer, filename) {
   try {
-    if (!/\.xlsx$/i.test(filename || '')) return false;
+    if (!/\.xlsx?$/i.test(filename || '')) return false;
     return !!(await loadFirstSheet(buffer, filename));
   } catch { return false; }
 }

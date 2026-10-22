@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { API } from '../config';
 import Header from '../components/Header';
 import ImportOrdersModal from '../components/ImportOrdersModal';
+import SalesBills, { OrdersTabs } from './SalesBills';
 import { fmtQty } from '../utils';
 import Portal from '../components/Portal';
 
@@ -126,6 +127,8 @@ export default function Orders() {
 
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [section, setSection] = useState('stock');
+  const [handoverFiles, setHandoverFiles] = useState([]);
   const [products, setProducts] = useState([]);
   const [newOrder, setNewOrder] = useState({ type: 'SALE', productId: '', quantity: '' });
   const isAdmin = localStorage.getItem('role') === 'ADMIN';
@@ -209,10 +212,15 @@ export default function Orders() {
     }
   };
 
+  if (section === 'bills' && localStorage.getItem('role') === 'ADMIN') {
+    return <SalesBills tab={section} onTab={setSection} initialFiles={handoverFiles} key={handoverFiles.length} />;
+  }
+
   return (
     <div className="page-fade" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <Header title="Transactions" subtitle="Stock in (purchases / received) and stock out (used in kitchen)" />
       <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
+        {localStorage.getItem('role') === 'ADMIN' && <OrdersTabs tab={section} onChange={setSection} />}
         {/* Stat chips */}
         <div style={{ display: 'flex', gap: 14, marginBottom: 24, justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div style={{ display: 'flex', gap: 14 }}>
@@ -257,7 +265,7 @@ export default function Orders() {
           </div></Portal>
         )}
 
-        {showImport && <ImportOrdersModal onClose={() => setShowImport(false)} onDone={fetchOrders} />}
+        {showImport && <ImportOrdersModal onClose={() => setShowImport(false)} onDone={fetchOrders} onSalesReport={(files) => { setShowImport(false); setHandoverFiles(files); setSection('bills'); }} />}
 
         {editing && (
           <Portal><div style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
