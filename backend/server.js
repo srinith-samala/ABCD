@@ -232,6 +232,17 @@ const uploadFiles = (req, res, next) => {
 const round2 = (n) => Math.round(n * 100) / 100;
 const round3 = (n) => Math.round(n * 1000) / 1000;
 
+function parseSafeDate(d) {
+  if (!d) return new Date();
+  if (d instanceof Date) return d;
+  const s = String(d).trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) {
+    return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12, 0, 0));
+  }
+  return new Date(d);
+}
+
 // Makes sure every supplier in `entries` ([{ name, phone }]) exists. Missing ones are created; existing ones only get
 // their phone filled in when it was blank (nothing else is touched). Returns { idByLower, added, updated }.
 async function syncSuppliers(entries) {
@@ -278,19 +289,35 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
     }
 
     const preview = String(req.body.preview) === 'true';
-    const recordPurchase = String(req.body.recordPurchase) === 'true'; // off by default: importing inventory must NOT create orders
+    const recordPurchase = req.body.recordPurchase !== 'false'; // default TRUE for dated daily inventory
+    const billDateStr = req.body.billDate || req.body.date;
+    const billDate = parseSafeDate(billDateStr);
 
     const { rows, mergedCount } = mergeDuplicateRows(parsed.rows);
-    const existing = await prisma.product.findMany({ select: { id: true, name: true, sku: true, quantity: true, price: true, unit: true } });
+    const existing = await prisma.product.findMany({ select: { id: true, name: true, sku: true, quantity: true, price: true, unit: true, costPrice: true } });
     const { toCreate, addUps, skipped } = planImport(rows, existing);
 
+    const totalUnitsToAdd = round3(
+      addUps.reduce((sum, a) => sum + (Number(a.add) || 0), 0) +
+      toCreate.reduce((sum, c) => sum + (Number(c.quantity) || 0), 0)
+    );
+    const estimatedBillCost = round2(
+      addUps.reduce((sum, a) => sum + (Number(a.add) * (Number(a.rate) > 0 ? Number(a.rate) : (Number(a.product.costPrice) || Number(a.product.price) || 0))), 0) +
+      toCreate.reduce((sum, c) => sum + (Number(c.quantity) * (Number(c.costPrice) || Number(c.price) || 0)), 0)
+    );
+
     const base = {
+      billDate: billDateStr || billDate.toISOString().slice(0, 10),
+      totalUnitsToAdd,
+      estimatedBillCost,
       toCreateCount: toCreate.length,
       newNames: toCreate.slice(0, 50).map(r => r.name),
       addUpCount: addUps.length,
       addUps: addUps.slice(0, 60).map(a => ({
         row: a.row, name: a.product.name, add: a.add, unit: a.product.unit,
         before: a.product.quantity, after: round3(a.product.quantity + a.add),
+        rate: a.rate > 0 ? a.rate : (a.product.costPrice || a.product.price || 0),
+        totalCost: round2(a.add * (a.rate > 0 ? a.rate : (a.product.costPrice || a.product.price || 0))),
       })),
       skippedCount: skipped.length,
       skipped: skipped.slice(0, 50),
@@ -307,6 +334,7 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
     let created = 0;
     let added = 0;
     let recordedTotal = 0;
+    let recordedUnits = 0;
     if (toCreate.length > 0 || addUps.length > 0) {
       await prisma.$transaction(async (tx) => {
         if (toCreate.length > 0) {
@@ -325,23 +353,40 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
           }
           const idByLower = new Map(cats.map(c => [c.name.toLowerCase(), c.id]));
 
-          const result = await tx.product.createMany({
-            data: toCreate.map(r => ({
-              name: r.name,
-              sku: r.sku,
-              categoryId: r.category ? idByLower.get(r.category.toLowerCase()) ?? null : null,
-              price: r.price,
-              quantity: r.quantity,
-              openingStock: r.quantity,
-              unit: r.unit,
-              reorderLevel: r.reorderLevel,
-              emoji: r.emoji,
-              costPrice: r.costPrice,
-              description: r.description,
-              supplierId: r.supplier ? sup.idByLower.get(r.supplier.toLowerCase()) ?? null : null,
-            })),
-          });
-          created = result.count;
+          for (const r of toCreate) {
+            const p = await tx.product.create({
+              data: {
+                name: r.name,
+                sku: r.sku,
+                categoryId: r.category ? idByLower.get(r.category.toLowerCase()) ?? null : null,
+                price: r.price,
+                quantity: r.quantity,
+                openingStock: r.quantity,
+                unit: r.unit,
+                reorderLevel: r.reorderLevel,
+                emoji: r.emoji,
+                costPrice: r.costPrice,
+                description: r.description,
+                supplierId: r.supplier ? sup.idByLower.get(r.supplier.toLowerCase()) ?? null : null,
+              }
+            });
+            created++;
+            if (recordPurchase && r.quantity > 0) {
+              const itemTotal = round2(r.quantity * (r.costPrice || r.price || 0));
+              await tx.transaction.create({
+                data: {
+                  productId: p.id,
+                  type: 'PURCHASE',
+                  quantity: r.quantity,
+                  total: itemTotal,
+                  userId: req.user.id,
+                  createdAt: billDate,
+                }
+              });
+              recordedTotal = round2(recordedTotal + itemTotal);
+              recordedUnits = round3(recordedUnits + r.quantity);
+            }
+          }
         }
 
         for (const a of addUps) {
@@ -349,19 +394,20 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
           if (!cur) continue;
           await tx.product.update({ where: { id: cur.id }, data: { quantity: round3(cur.quantity + a.add) } });
           if (recordPurchase) {
-            const rate = a.rate > 0 ? a.rate : cur.price;
+            const rate = a.rate > 0 ? a.rate : (cur.costPrice || cur.price || 0);
             const total = round2(a.add * rate);
             await tx.transaction.create({
-              data: { productId: cur.id, type: 'PURCHASE', quantity: a.add, total, userId: req.user.id },
+              data: { productId: cur.id, type: 'PURCHASE', quantity: a.add, total, userId: req.user.id, createdAt: billDate },
             });
             recordedTotal = round2(recordedTotal + total);
+            recordedUnits = round3(recordedUnits + a.add);
           }
           added++;
         }
       }, { timeout: 120000, maxWait: 20000 });
 
       if (req.user.role !== 'ADMIN') {
-        await prisma.notification.create({ data: { message: `${req.user.name} imported a file: ${created} new products, stock added to ${added}` } });
+        await prisma.notification.create({ data: { message: `${req.user.name} imported inventory for ${billDate.toISOString().slice(0, 10)}: ${created} new products, stock added to ${added}` } });
       }
     }
 
@@ -371,11 +417,66 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
       added,
       recordedPurchase: recordPurchase,
       recordedTotal,
+      recordedUnits,
+      recordedDate: billDate.toISOString().slice(0, 10),
       suppliersAdded: sup.added,
       suppliersUpdated: sup.updated,
     });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a dated Daily Inventory Bill directly from current stock (e.g. October 1 Inventory)
+app.post('/api/stock/create-daily-bill', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { date, customTotal } = req.body;
+    const targetDate = parseSafeDate(date);
+    
+    // Fetch all current products that have stock > 0
+    const products = await prisma.product.findMany({ where: { quantity: { gt: 0 } } });
+    if (!products.length) {
+      return res.status(400).json({ error: 'No items in stock to record as an inventory bill' });
+    }
+
+    let recordedTotal = 0;
+    let recordedUnits = 0;
+
+    await prisma.$transaction(async (tx) => {
+      for (const p of products) {
+        const qty = Number(p.quantity);
+        if (qty <= 0) continue;
+        const rate = Number(p.costPrice || p.price || 0);
+        const itemTotal = round2(qty * rate);
+        await tx.transaction.create({
+          data: {
+            productId: p.id,
+            type: 'PURCHASE',
+            quantity: qty,
+            total: itemTotal,
+            userId: req.user.id,
+            createdAt: targetDate,
+          }
+        });
+        recordedTotal = round2(recordedTotal + itemTotal);
+        recordedUnits = round3(recordedUnits + qty);
+      }
+    });
+
+    const finalTotal = customTotal !== undefined && customTotal !== '' && !isNaN(parseFloat(customTotal))
+      ? parseFloat(customTotal)
+      : recordedTotal;
+
+    res.json({
+      success: true,
+      date: targetDate.toISOString().slice(0, 10),
+      itemsCount: products.length,
+      totalUnits: recordedUnits,
+      totalCost: finalTotal,
+    });
+  } catch (err) {
+    console.error('Failed to create daily bill:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -651,7 +752,7 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
     const total = req.body.total !== undefined && req.body.total !== '' && !isNaN(parseFloat(req.body.total))
       ? Math.round(parseFloat(req.body.total) * 100) / 100
       : Math.round(qty * (type === 'PURCHASE' && product.costPrice ? product.costPrice : product.price) * 100) / 100;
-    const createdAt = req.body.date ? new Date(req.body.date) : new Date();
+    const createdAt = parseSafeDate(req.body.date);
 
     const transaction = await prisma.transaction.create({
       data: { productId: parseInt(productId), type, quantity: qty, total, userId: req.user.id, createdAt }
@@ -1132,15 +1233,18 @@ app.get('/api/dailysales', authenticateToken, isAdmin, async (req, res) => {
 app.post('/api/dailysales', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { date, cash, card, upi, zomato, discount } = req.body;
-    const sale = await prisma.dailySales.create({
-      data: {
-        date: new Date(date),
-        cash: parseFloat(cash) || 0,
-        card: parseFloat(card) || 0,
-        upi: parseFloat(upi) || 0,
-        zomato: parseFloat(zomato) || 0,
-        discount: parseFloat(discount) || 0,
-      }
+    const targetDate = parseSafeDate(date);
+    const data = {
+      cash: parseFloat(cash) || 0,
+      card: parseFloat(card) || 0,
+      upi: parseFloat(upi) || 0,
+      zomato: parseFloat(zomato) || 0,
+      discount: parseFloat(discount) || 0,
+    };
+    const sale = await prisma.dailySales.upsert({
+      where: { date: targetDate },
+      create: { date: targetDate, ...data },
+      update: data,
     });
     res.json(sale);
   } catch (err) { res.status(400).json({ error: err.message }); }

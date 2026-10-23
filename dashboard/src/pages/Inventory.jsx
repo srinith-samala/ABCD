@@ -10,7 +10,18 @@ import Portal from '../components/Portal';
 
 const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 const inr0 = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
-const fmtDay = (d) => new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+const toDayStr = (d) => {
+  if (!d) return '';
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return '';
+  return dt.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+};
+const fmtDay = (d) => {
+  if (!d) return '';
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return d;
+  return dt.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+};
 
 export default function Inventory() {
   const [tab, setTab] = useState('All Items'); // 'All Items' | 'Daily Inventory' | 'Low Stock' | 'Receiving Log'
@@ -25,13 +36,19 @@ export default function Inventory() {
   const [showImport, setShowImport] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
+  // Quick Convert/Log Current Stock as Dated Bill Modal
+  const [showQuickBillModal, setShowQuickBillModal] = useState(false);
+  const [quickBillDate, setQuickBillDate] = useState('2026-10-01');
+  const [quickBillTotal, setQuickBillTotal] = useState('');
+  const [creatingBill, setCreatingBill] = useState(false);
+
   // Quick Add Stock Item Modal
   const [showAddStock, setShowAddStock] = useState(false);
   const [stockEntry, setStockEntry] = useState({
     productId: '',
     quantity: '',
     total: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
   });
   const [savingStock, setSavingStock] = useState(false);
 
@@ -77,7 +94,7 @@ export default function Inventory() {
       });
       if (res.ok) {
         setShowAddStock(false);
-        setStockEntry({ productId: '', quantity: '', total: '', date: new Date().toISOString().slice(0, 10) });
+        setStockEntry({ productId: '', quantity: '', total: '', date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) });
         fetchData();
       } else {
         const j = await res.json().catch(() => ({}));
@@ -88,6 +105,35 @@ export default function Inventory() {
       alert('Error connecting to server');
     } finally {
       setSavingStock(false);
+    }
+  };
+
+  const handleCreateDailyBill = async (e) => {
+    e.preventDefault();
+    setCreatingBill(true);
+    try {
+      const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` };
+      const res = await fetch(`${API}/api/stock/create-daily-bill`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          date: quickBillDate,
+          customTotal: quickBillTotal !== '' ? parseFloat(quickBillTotal) : undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setShowQuickBillModal(false);
+        alert(`Successfully logged ${data.itemsCount} items as ${fmtDay(quickBillDate)} inventory bill (${inr(data.totalCost)})!`);
+        fetchData();
+      } else {
+        alert(data.error || 'Failed to create daily bill');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error connecting to server');
+    } finally {
+      setCreatingBill(false);
     }
   };
 
@@ -104,11 +150,12 @@ export default function Inventory() {
     })
     .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name) : sort === 'stock' ? b.quantity - a.quantity : b.price - a.price);
 
-  // Group receiving logs by Date
+  // Group receiving logs by Date using Indian local time
   const dailyGroups = useMemo(() => {
     const map = new Map();
     transactions.forEach(t => {
-      const d = new Date(t.createdAt).toISOString().slice(0, 10);
+      const d = toDayStr(t.createdAt);
+      if (!d) return;
       if (!map.has(d)) {
         map.set(d, { date: d, items: [], totalAmount: 0, totalUnits: 0 });
       }
@@ -204,7 +251,14 @@ export default function Inventory() {
                   style={{ ...fieldStyle, flex: 1, minWidth: 180 }}
                 />
               </div>
-              <div style={{ display: 'flex', gap: 10 }}>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => { setQuickBillDate(dateFilter || '2026-10-01'); setShowQuickBillModal(true); }}
+                  style={{ padding: '9px 16px', borderRadius: 10, background: '#EEF0FF', color: '#6C63FF', border: '1.5px solid #C7D2FE', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+                  title="Record existing master stock as an inventory bill for any date"
+                >
+                  ⚡ Record Stock as Dated Bill
+                </button>
                 <button onClick={() => setShowImport(true)} style={{ padding: '9px 18px', borderRadius: 10, background: '#fff', color: '#0F1B2D', border: '1.5px solid #E8EAED', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>⬆ Import CSV / Excel</button>
                 <button onClick={() => setShowAddStock(true)} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Daily Bill / Item</button>
               </div>
@@ -281,8 +335,33 @@ export default function Inventory() {
 
               {dailyGroups.length === 0 && (
                 <div className="card" style={{ textAlign: 'center', padding: '48px 24px', color: '#8A94A6' }}>
-                  <p style={{ fontSize: 15, fontWeight: 600, color: '#0F1B2D', marginBottom: 6 }}>No date-categorized inventory bills found.</p>
-                  <p style={{ fontSize: 13, marginBottom: 16 }}>Click <b>+ Add Daily Bill / Item</b> or <b>Import CSV / Excel</b> to log inventory by date.</p>
+                  <div style={{ fontSize: 40, marginBottom: 10 }}>📅</div>
+                  <p style={{ fontSize: 16, fontWeight: 800, color: '#0F1B2D', marginBottom: 6 }}>No date-categorized inventory bills found.</p>
+                  <p style={{ fontSize: 13, marginBottom: 20, maxWidth: 520, margin: '0 auto 20px', lineHeight: 1.5 }}>
+                    Log your inventory bills by date to see day-by-day units, bill costs, and calculate daily net profit.
+                  </p>
+                  <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+                    {products.length > 0 && (
+                      <button
+                        onClick={() => { setQuickBillDate('2026-10-01'); setShowQuickBillModal(true); }}
+                        style={{ padding: '11px 22px', borderRadius: 10, background: '#6C63FF', color: '#fff', border: 'none', fontSize: 13, fontWeight: 700, cursor: 'pointer', boxShadow: '0 4px 12px rgba(108, 99, 255, 0.3)' }}
+                      >
+                        ⚡ Log Current Stock as October 1 Bill ({products.length} Items · {inr(totalStockValue)})
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setShowImport(true)}
+                      style={{ padding: '11px 22px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      ⬆ Import October 1 Bill (.xlsx / .csv)
+                    </button>
+                    <button
+                      onClick={() => setShowAddStock(true)}
+                      style={{ padding: '11px 20px', borderRadius: 10, background: '#fff', color: '#0F1B2D', border: '1.5px solid #CBD5E1', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      + Add Individual Item
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -449,9 +528,54 @@ export default function Inventory() {
         </div></Portal>
       )}
 
+      {showQuickBillModal && (
+        <Portal><div onClick={() => setShowQuickBillModal(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 480, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Record Inventory Bill by Date</h3>
+              <button onClick={() => setShowQuickBillModal(false)} style={{ border: 'none', background: '#F4F5F7', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 15 }}>✕</button>
+            </div>
+            <form onSubmit={handleCreateDailyBill}>
+              <p style={{ fontSize: 13, color: '#64748B', marginBottom: 14, lineHeight: 1.5 }}>
+                Record all <b>{products.length} current master stock items</b> (Total Value: <b>{inr(totalStockValue)}</b>) as an official Inventory Bill for the selected date. It will appear under <b>📅 Daily Inventory</b> and deduct from <b>📊 Daily Profit</b> for that date.
+              </p>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#0F1B2D', marginBottom: 4 }}>Bill Date</label>
+                <input
+                  type="date"
+                  required
+                  value={quickBillDate}
+                  onChange={e => setQuickBillDate(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid #CBD5E1', fontSize: 14, fontWeight: 700, fontFamily: 'inherit', boxSizing: 'border-box' }}
+                />
+              </div>
+              <div style={{ marginBottom: 18 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#0F1B2D', marginBottom: 4 }}>
+                  Bill Total Cost (₹) <span style={{ fontWeight: 400, color: '#8A94A6' }}>(optional override)</span>
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder={`Calculated: ${totalStockValue.toFixed(2)}`}
+                  value={quickBillTotal}
+                  onChange={e => setQuickBillTotal(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid #CBD5E1', fontSize: 14, fontFamily: 'inherit', boxSizing: 'border-box' }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                <button type="button" onClick={() => setShowQuickBillModal(false)} style={{ padding: '9px 18px', borderRadius: 10, background: '#F4F5F7', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                <button type="submit" disabled={creatingBill} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                  {creatingBill ? 'Recording...' : `Record Bill for ${fmtDay(quickBillDate)}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div></Portal>
+      )}
+
       <ProductDrawer product={selected} onClose={() => setSelected(null)} fetchProducts={fetchData} />
       {showForm && <ProductFormModal onClose={() => setShowForm(false)} onSaved={fetchData} />}
-      {showImport && <ImportProductsModal onClose={() => setShowImport(false)} onDone={fetchData} />}
+      {showImport && <ImportProductsModal onClose={() => setShowImport(false)} onDone={fetchData} initialDate={dateFilter || '2026-10-01'} />}
     </div>
   );
 }

@@ -3,16 +3,22 @@
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-// ---------- dates (always UTC, dates are stored at UTC midnight) ----------
-const monthKey = (d) => {
+// ---------- dates (always consistent with Asia/Kolkata restaurant local time) ----------
+const dayKey = (d) => {
+  if (!d) return '';
   const x = new Date(d);
-  return `${x.getUTCFullYear()}-${String(x.getUTCMonth() + 1).padStart(2, '0')}`;
+  if (isNaN(x.getTime())) return '';
+  return x.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+};
+const monthKey = (d) => {
+  const k = dayKey(d);
+  return k ? k.slice(0, 7) : '';
 };
 const monthLabel = (key) => {
+  if (!key) return '';
   const [y, m] = key.split('-').map(Number);
   return `${MONTHS[m - 1]} ${y}`;
 };
-const dayKey = (d) => new Date(d).toISOString().slice(0, 10);
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 // ---------- expense categoriser ----------
@@ -91,19 +97,21 @@ const OPEX_ORDER = ['Gas', 'Transport', 'Staff', 'Commission', 'Rent', 'Marketin
 
 function availableMonths({ dailySales = [], expenses = [], payroll = [], transactions = [] }) {
   const set = new Set();
-  dailySales.forEach(s => set.add(monthKey(s.date)));
-  expenses.forEach(e => set.add(monthKey(e.expenseDate || e.createdAt)));
-  payroll.forEach(p => set.add(monthKey(p.month)));
-  transactions.filter(t => t.type === 'PURCHASE').forEach(t => set.add(monthKey(t.createdAt)));
+  dailySales.forEach(s => { const k = monthKey(s.date); if (k) set.add(k); });
+  expenses.forEach(e => { const k = monthKey(e.expenseDate || e.createdAt); if (k) set.add(k); });
+  payroll.forEach(p => { const k = monthKey(p.month); if (k) set.add(k); });
+  transactions.forEach(t => { const k = monthKey(t.createdAt); if (k) set.add(k); });
   return [...set].sort();
 }
 
-// The month that has the most complete data: months with sales are preferred over expense-only months
+// The month that has the most complete data: months with sales or inventory activity are preferred
 function defaultMonth(data) {
   const months = availableMonths(data);
   if (!months.length) return null;
-  const withSales = new Set((data.dailySales || []).map(s => monthKey(s.date)));
-  const candidates = months.filter(m => withSales.has(m));
+  const withSalesOrInv = new Set();
+  (data.dailySales || []).forEach(s => { const k = monthKey(s.date); if (k) withSalesOrInv.add(k); });
+  (data.transactions || []).forEach(t => { const k = monthKey(t.createdAt); if (k) withSalesOrInv.add(k); });
+  const candidates = months.filter(m => withSalesOrInv.has(m));
   return (candidates.length ? candidates : months).slice(-1)[0];
 }
 
@@ -114,13 +122,26 @@ function computePnL(data, month) {
   const sales = { cash: 0, card: 0, upi: 0, zomato: 0, total: 0, discount: 0 };
   const byDayMap = new Map();
 
-  // 1. Process daily sales
+  // 1. Process daily sales (both from DailySales register and SALE transactions)
   dailySales.filter(s => inMonth(s.date)).forEach(s => {
     sales.cash += s.cash; sales.card += s.card; sales.upi += s.upi; sales.zomato += s.zomato; sales.discount += s.discount || 0;
     const k = dayKey(s.date);
+    if (!k) return;
     const r = byDayMap.get(k) || { date: k, cash: 0, card: 0, upi: 0, zomato: 0, sales: 0, inventory: 0, inventoryUnits: 0, items: [] };
     r.cash += s.cash; r.card += s.card; r.upi += s.upi; r.zomato += s.zomato;
     r.sales = round2(r.cash + r.card + r.upi + r.zomato);
+    byDayMap.set(k, r);
+  });
+
+  const saleTx = transactions.filter(t => t.type === 'SALE' && inMonth(t.createdAt));
+  saleTx.forEach(t => {
+    const k = dayKey(t.createdAt);
+    if (!k) return;
+    const r = byDayMap.get(k) || { date: k, cash: 0, card: 0, upi: 0, zomato: 0, sales: 0, inventory: 0, inventoryUnits: 0, items: [] };
+    const amt = Number(t.total) || 0;
+    r.cash += amt;
+    r.sales = round2(r.sales + amt);
+    sales.cash += amt;
     byDayMap.set(k, r);
   });
   sales.total = round2(sales.cash + sales.card + sales.upi + sales.zomato);

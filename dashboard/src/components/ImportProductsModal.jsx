@@ -31,10 +31,18 @@ const btn = (primary, disabled) => ({
   cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1,
 });
 
-export default function ImportProductsModal({ onClose, onDone }) {
+const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+
+export default function ImportProductsModal({ onClose, onDone, initialDate }) {
   const [step, setStep] = useState('pick'); // pick -> preview -> done
   const [file, setFile] = useState(null);
-  const [recordPurchase, setRecordPurchase] = useState(false);
+  const [billDate, setBillDate] = useState(() => {
+    if (initialDate) return initialDate;
+    // Default to Indian calendar date
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  });
+  const [recordPurchase, setRecordPurchase] = useState(true);
+  const [customTotal, setCustomTotal] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [data, setData] = useState(null);
@@ -63,6 +71,8 @@ export default function ImportProductsModal({ onClose, onDone }) {
       fd.append('file', file);
       fd.append('preview', String(preview));
       fd.append('recordPurchase', String(recordPurchase));
+      fd.append('billDate', billDate);
+      if (customTotal) fd.append('customTotal', customTotal);
       const res = await fetch(`${API}/api/stock/import`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }, // no Content-Type: browser sets the multipart boundary
@@ -82,50 +92,102 @@ export default function ImportProductsModal({ onClose, onDone }) {
   };
 
   const nothingToDo = data && data.toCreateCount === 0 && data.addUpCount === 0;
+  const totalUnits = data ? (data.totalUnitsToAdd || data.addUps?.reduce((s, a) => s + (Number(a.add) || 0), 0) || 0) : 0;
+  const totalCost = data ? (data.estimatedBillCost || data.addUps?.reduce((s, a) => s + (Number(a.totalCost) || 0), 0) || 0) : 0;
 
   return (
     <Portal><div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-          <h3 style={{ fontSize: 17, fontWeight: 700 }}>Import stock from CSV / Excel</h3>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 580, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div>
+            <h3 style={{ fontSize: 17, fontWeight: 700 }}>Import Stock / Daily Inventory Bill</h3>
+            <p style={{ fontSize: 12, color: '#8A94A6', marginTop: 2 }}>Upload supplier bill or stock Excel to log date-categorized inventory</p>
+          </div>
           <button onClick={onClose} style={{ border: 'none', background: '#F4F5F7', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 15 }}>✕</button>
         </div>
 
         {step === 'pick' && (
           <>
-            <p style={{ fontSize: 13, color: '#8A94A6', marginBottom: 16 }}>
-              Required column: <b>name</b>. Optional: quantity, unit, price, category, supplier, supplier_phone, reorder_level, sku, emoji, description.
-              <br /><b>New items</b> are created. <b>Items that already exist get this file's quantity added to their stock</b> (4 L milk + 2 L in the file = 6 L).
-              You will see a preview first, nothing changes until you confirm.
+            <div style={{ background: '#F4F7FB', borderRadius: 12, padding: '12px 16px', marginBottom: 16, border: '1px solid #E2E8F0' }}>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#0F1B2D' }}>
+                  📅 Select Bill / Inventory Date:
+                </span>
+                <input
+                  type="date"
+                  value={billDate}
+                  onChange={e => setBillDate(e.target.value)}
+                  style={{ padding: '6px 12px', borderRadius: 8, border: '1.5px solid #CBD5E1', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', background: '#fff' }}
+                />
+              </label>
+            </div>
+
+            <p style={{ fontSize: 12.5, color: '#64748B', marginBottom: 14 }}>
+              Required column: <b>name</b>. Optional: quantity, price, unit, category, supplier, sku.
+              <br />Existing items get this file's quantity added to stock. All items will be categorized under <b>{billDate}</b> in Daily Inventory.
             </p>
+
             <div
               onClick={() => inputRef.current?.click()}
               onDragOver={e => { e.preventDefault(); setDrag(true); }}
               onDragLeave={() => setDrag(false)}
               onDrop={e => { e.preventDefault(); setDrag(false); pick(e.dataTransfer.files?.[0]); }}
-              style={{ border: `2px dashed ${drag ? '#2ECC71' : '#D0D5DD'}`, background: drag ? '#F0FBF4' : '#FAFBFC', borderRadius: 12, padding: '28px 16px', textAlign: 'center', cursor: 'pointer', marginBottom: 12 }}
+              style={{ border: `2px dashed ${drag ? '#2ECC71' : '#CBD5E1'}`, background: drag ? '#F0FBF4' : '#FAFBFC', borderRadius: 12, padding: '28px 16px', textAlign: 'center', cursor: 'pointer', marginBottom: 12 }}
             >
-              <div style={{ fontSize: 30, marginBottom: 6 }}>📄</div>
+              <div style={{ fontSize: 32, marginBottom: 6 }}>📄</div>
               {file
                 ? <p style={{ fontSize: 14, fontWeight: 600 }}>{file.name} <span style={{ color: '#8A94A6', fontWeight: 400 }}>({(file.size / 1024).toFixed(1)} KB)</span></p>
-                : <p style={{ fontSize: 13, color: '#8A94A6' }}>Click to choose a file, or drag &amp; drop it here</p>}
+                : <p style={{ fontSize: 13, color: '#8A94A6' }}>Click to choose a file (.xlsx / .csv), or drag &amp; drop it here</p>}
               <input ref={inputRef} type="file" accept=".csv,.xlsx" style={{ display: 'none' }} onChange={e => pick(e.target.files?.[0])} />
             </div>
-            <button onClick={downloadTemplate} style={{ border: 'none', background: 'none', color: '#16A34A', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: 0, marginBottom: 14 }}>
+            <button onClick={downloadTemplate} style={{ border: 'none', background: 'none', color: '#16A34A', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: 0, marginBottom: 16 }}>
               ⬇ Download sample template (CSV)
             </button>
             {error && <p style={{ background: '#FEE2E2', color: '#B91C1C', fontSize: 13, padding: '10px 12px', borderRadius: 10, marginBottom: 14 }}>{error}</p>}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button onClick={onClose} style={btn(false)}>Cancel</button>
-              <button onClick={() => send(true)} disabled={!file || busy} style={btn(true, !file || busy)}>{busy ? 'Checking...' : 'Preview'}</button>
+              <button onClick={() => send(true)} disabled={!file || busy} style={btn(true, !file || busy)}>{busy ? 'Reading File...' : 'Preview & Verify'}</button>
             </div>
           </>
         )}
 
         {step === 'preview' && data && (
           <>
-            <p style={{ fontSize: 13, color: '#8A94A6', marginBottom: 12 }}>Nothing has been saved yet. This is what will happen:</p>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+            {/* Bill Summary Card */}
+            <div style={{
+              background: 'linear-gradient(135deg, #F0FDF4 0%, #ECFDF5 100%)',
+              border: '1.5px solid #86EFAC', borderRadius: 12, padding: '14px 18px', marginBottom: 16
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 10, borderBottom: '1px solid #BBF7D0', paddingBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 18 }}>📅</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#166534' }}>Inventory Bill Date:</span>
+                  <input
+                    type="date"
+                    value={billDate}
+                    onChange={e => setBillDate(e.target.value)}
+                    style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #86EFAC', fontSize: 13, fontWeight: 700, background: '#fff' }}
+                  />
+                </div>
+                <span style={{ fontSize: 12, color: '#15803D', fontWeight: 600 }}>File: {file?.name}</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
+                <div>
+                  <p style={{ fontSize: 11, color: '#15803D', textTransform: 'uppercase', fontWeight: 700 }}>Total Items</p>
+                  <p style={{ fontSize: 18, fontWeight: 800, color: '#0F1B2D', marginTop: 2 }}>{data.addUpCount + data.toCreateCount} items</p>
+                </div>
+                <div>
+                  <p style={{ fontSize: 11, color: '#15803D', textTransform: 'uppercase', fontWeight: 700 }}>Total Quantity</p>
+                  <p style={{ fontSize: 18, fontWeight: 800, color: '#16A34A', marginTop: 2 }}>{fmtQty(totalUnits)} units</p>
+                </div>
+                <div>
+                  <p style={{ fontSize: 11, color: '#15803D', textTransform: 'uppercase', fontWeight: 700 }}>Total Bill Cost</p>
+                  <p style={{ fontSize: 18, fontWeight: 800, color: '#0F1B2D', marginTop: 2 }}>{inr(totalCost)}</p>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
               {pill('#D6F5E3', '#16A34A', `New items: ${data.toCreateCount}`)}
               {pill('#EEF0FF', '#6C63FF', `Stock added to existing: ${data.addUpCount}`)}
               {data.errorCount > 0 && pill('#FEE2E2', '#EF4444', `Errors: ${data.errorCount}`)}
@@ -134,86 +196,87 @@ export default function ImportProductsModal({ onClose, onDone }) {
 
             {data.mergedCount > 0 && (
               <p style={{ fontSize: 12, color: '#92400E', background: '#FEF3C7', borderRadius: 10, padding: '8px 12px', marginBottom: 12 }}>
-                {data.mergedCount} repeated row(s) in the file were combined (their quantities are added together).
+                {data.mergedCount} repeated row(s) in the file were combined (quantities added together).
               </p>
             )}
 
             {data.addUpCount > 0 && (
               <div style={{ marginBottom: 12 }}>
-                <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Existing items, stock will change</p>
-                <div style={{ maxHeight: 170, overflowY: 'auto', background: '#FAFBFC', borderRadius: 10, padding: '8px 12px', fontSize: 12 }}>
+                <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Items to be added to Daily Inventory for {billDate}:</p>
+                <div style={{ maxHeight: 160, overflowY: 'auto', background: '#FAFBFC', borderRadius: 10, padding: '8px 12px', fontSize: 12 }}>
                   {data.addUps.map((a, i) => (
-                    <p key={i} style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <p key={i} style={{ padding: '3px 0', display: 'flex', justifyContent: 'space-between', gap: 8, borderBottom: '1px solid #F1F5F9' }}>
                       <span>{a.name}</span>
-                      <span style={{ color: '#6C63FF', fontWeight: 600, whiteSpace: 'nowrap' }}>{fmtQty(a.before)} → {fmtQty(a.after)} {a.unit || ''} (+{fmtQty(a.add)})</span>
+                      <span style={{ color: '#0F1B2D', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        +{fmtQty(a.add)} {a.unit || ''} {a.rate ? `(@ ₹${a.rate})` : ''} {a.totalCost ? `· ${inr(a.totalCost)}` : ''}
+                      </span>
                     </p>
                   ))}
-                  {data.addUpCount > data.addUps.length && <p style={{ color: '#8A94A6' }}>…and {data.addUpCount - data.addUps.length} more</p>}
+                  {data.addUpCount > data.addUps.length && <p style={{ color: '#8A94A6', marginTop: 4 }}>…and {data.addUpCount - data.addUps.length} more</p>}
                 </div>
               </div>
             )}
 
             {data.toCreateCount > 0 && (
               <p style={{ fontSize: 12, color: '#16A34A', background: '#F0FBF4', borderRadius: 10, padding: '8px 12px', marginBottom: 12 }}>
-                New: <b>{data.newNames.join(', ')}</b>{data.toCreateCount > data.newNames.length ? ` …and ${data.toCreateCount - data.newNames.length} more` : ''}
+                New products to create: <b>{data.newNames.join(', ')}</b>{data.toCreateCount > data.newNames.length ? ` …and ${data.toCreateCount - data.newNames.length} more` : ''}
               </p>
             )}
 
-            {data.errorCount > 0 && (
-              <div style={{ marginBottom: 12 }}>
-                <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Rows with errors (will not be imported)</p>
-                <div style={{ maxHeight: 110, overflowY: 'auto', background: '#FAFBFC', borderRadius: 10, padding: '8px 12px', fontSize: 12 }}>
-                  {data.errors.map((e, i) => <p key={i} style={{ padding: '2px 0' }}>Row {e.row}{e.name ? ` (${e.name})` : ''}: {e.message}</p>)}
-                </div>
-              </div>
-            )}
-
-            {data.ignoredSheets?.length > 0 && (
-              <p style={{ fontSize: 12, color: '#92400E', background: '#FEF3C7', borderRadius: 10, padding: '8px 12px', marginBottom: 12 }}>
-                Only the stock sheet is used. Not imported: <b>{data.ignoredSheets.join(', ')}</b>.
-              </p>
-            )}
-
-            {data.addUpCount > 0 && (
-              <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: '#FAFBFC', borderRadius: 10, padding: '10px 12px', marginBottom: 14, cursor: 'pointer' }}>
-                <input type="checkbox" checked={recordPurchase} onChange={e => setRecordPurchase(e.target.checked)} style={{ marginTop: 3 }} />
-                <span style={{ fontSize: 12.5 }}>
-                  <b>Also create a Stock In order for the added stock (optional)</b>
-                  <span style={{ display: 'block', color: '#8A94A6', marginTop: 2 }}>
-                    Normally leave this OFF: importing inventory only updates stock and does not touch Orders. Tick only if you want it listed under Orders too.
-                  </span>
+            {/* Checkbox for recording as a dated bill */}
+            <label style={{
+              display: 'flex', gap: 12, alignItems: 'flex-start',
+              background: recordPurchase ? '#F0FDF4' : '#FAFBFC',
+              border: `1.5px solid ${recordPurchase ? '#86EFAC' : '#E2E8F0'}`,
+              borderRadius: 10, padding: '12px 14px', marginBottom: 14, cursor: 'pointer'
+            }}>
+              <input
+                type="checkbox"
+                checked={recordPurchase}
+                onChange={e => setRecordPurchase(e.target.checked)}
+                style={{ marginTop: 2, transform: 'scale(1.2)' }}
+              />
+              <span style={{ fontSize: 13 }}>
+                <b style={{ color: '#0F1B2D' }}>✓ Record as a Date-Categorized Inventory Bill for {billDate}</b>
+                <span style={{ display: 'block', color: '#64748B', marginTop: 3, fontSize: 12 }}>
+                  This automatically categorizes this purchase under <b>{billDate}</b> in <b>📅 Daily Inventory</b> and deducts it in your <b>📊 Daily Profit &amp; Ledger</b>!
                 </span>
-              </label>
-            )}
+              </span>
+            </label>
 
             {error && <p style={{ background: '#FEE2E2', color: '#B91C1C', fontSize: 13, padding: '10px 12px', borderRadius: 10, marginBottom: 14 }}>{error}</p>}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button onClick={() => { setStep('pick'); setData(null); }} style={btn(false)}>Back</button>
-              <button onClick={() => send(false)} disabled={busy || nothingToDo} style={btn(true, busy || nothingToDo)}>{busy ? 'Importing...' : 'Confirm & import'}</button>
+              <button onClick={() => send(false)} disabled={busy || nothingToDo} style={btn(true, busy || nothingToDo)}>
+                {busy ? 'Saving...' : `Confirm & Log Inventory for ${billDate}`}
+              </button>
             </div>
           </>
         )}
 
         {step === 'done' && data && (
           <>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '14px 0' }}>
-              {pill('#D6F5E3', '#16A34A', `✓ New items: ${data.created}`)}
-              {pill('#EEF0FF', '#6C63FF', `Stock added to: ${data.added}`)}
-              {data.errorCount > 0 && pill('#FEE2E2', '#EF4444', `Errors: ${data.errorCount}`)}
+            <div style={{ textAlign: 'center', padding: '16px 0' }}>
+              <div style={{ fontSize: 42, marginBottom: 10 }}>🎉</div>
+              <h4 style={{ fontSize: 18, fontWeight: 800, color: '#0F1B2D' }}>Inventory Bill Successfully Logged!</h4>
+              <p style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>
+                Categorized under <b>{data.recordedDate || billDate}</b> with total quantity and cost.
+              </p>
             </div>
-            {data.added > 0 && data.recordedPurchase && (
-              <p style={{ fontSize: 12, color: '#16A34A', background: '#F0FBF4', borderRadius: 10, padding: '8px 12px', marginBottom: 12 }}>
-                Recorded as purchases: ₹{Number(data.recordedTotal || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-              </p>
-            )}
-            {(data.suppliersAdded > 0 || data.suppliersUpdated > 0) && (
-              <p style={{ fontSize: 12, color: '#16A34A', background: '#F0FBF4', borderRadius: 10, padding: '8px 12px', marginBottom: 12 }}>
-                Suppliers: {data.suppliersAdded} added, {data.suppliersUpdated} phone number(s) filled in.
-              </p>
-            )}
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '14px 0', justifyContent: 'center' }}>
+              {pill('#D6F5E3', '#16A34A', `✓ Items Updated: ${data.added + data.created}`)}
+              {pill('#EEF0FF', '#6C63FF', `Total Units: ${fmtQty(data.recordedUnits || totalUnits)}`)}
+              {pill('#FEF3C7', '#92400E', `Total Cost: ${inr(data.recordedTotal || totalCost)}`)}
+            </div>
+
+            <p style={{ fontSize: 12.5, color: '#16A34A', background: '#F0FBF4', borderRadius: 10, padding: '10px 14px', marginBottom: 16, textAlign: 'center' }}>
+              ✓ Now visible under <b>📅 Daily Inventory</b> and reflecting in <b>📊 Daily Profit &amp; Ledger</b>!
+            </p>
+
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button onClick={() => { setStep('pick'); setData(null); setFile(null); }} style={btn(false)}>Import another</button>
-              <button onClick={onClose} style={btn(true)}>Done</button>
+              <button onClick={() => { setStep('pick'); setData(null); setFile(null); }} style={btn(false)}>Import Another</button>
+              <button onClick={onClose} style={btn(true)}>Close &amp; View Inventory</button>
             </div>
           </>
         )}

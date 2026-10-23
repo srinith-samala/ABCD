@@ -17,7 +17,7 @@ const typeLabel = (t) => (t === 'SALE' ? 'Stock Out' : t === 'PURCHASE' ? 'Stock
 const inr = (n) => `₹${Math.abs(Number(n) || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 const inr0 = (n) => `₹${Math.abs(Number(n) || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 const signedInr = (n) => `${Number(n) < 0 ? '-' : '+'}${inr(n)}`;
-const fmtDay = (d) => new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+const fmtDay = (d) => new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
 
 const timeline = ['Ordered', 'Dispatched', 'Delivered'];
 
@@ -112,7 +112,7 @@ export default function Orders() {
     productId: '',
     quantity: '',
     total: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
   });
 
   const isAdmin = localStorage.getItem('role') === 'ADMIN';
