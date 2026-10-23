@@ -16,7 +16,7 @@ export function OrdersTabs({ tab, onChange }) {
   const btn = (key, label) => (
     <button key={key} onClick={() => onChange(key)} style={{ padding: '8px 16px', borderRadius: 9, border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer', background: tab === key ? '#0F1B2D' : 'transparent', color: tab === key ? '#fff' : '#8A94A6' }}>{label}</button>
   );
-  return <div style={{ display: 'inline-flex', gap: 4, background: '#fff', padding: 4, borderRadius: 12, boxShadow: '0 2px 16px rgba(0,0,0,0.06)', marginBottom: 20 }}>{btn('stock', '📦 Stock Orders')}{btn('bills', '🧾 Daily Sales Bills')}</div>;
+  return <div style={{ display: 'inline-flex', gap: 4, background: '#fff', padding: 4, borderRadius: 12, boxShadow: '0 2px 16px rgba(0,0,0,0.06)', marginBottom: 20 }}>{btn('daily', '📊 Daily Profit & Ledger')}{btn('stock', '📦 Stock Orders')}{btn('bills', '🧾 Daily Sales Bills')}</div>;
 }
 
 function DayDrawer({ date, onClose, onDeleted }) {

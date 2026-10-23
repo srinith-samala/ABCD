@@ -79,16 +79,17 @@ export default function PandL() {
           {prev && <p style={{ fontSize: 12.5, color: '#5B6577', marginTop: 4 }}>vs {prev.label}: {signed(prev.netProfit)} · sales {dSales >= 0 ? '▲' : '▼'} {Math.abs(dSales).toFixed(1)}% · costs {dExp >= 0 ? '▲' : '▼'} {Math.abs(dExp).toFixed(1)}%</p>}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 18, marginBottom: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 20 }}>
           {[
-            ['Total sales', money(pnl.sales.total), '#16A34A', 'Net of tax'],
-            ['Food cost', `${pnl.foodCostPct.toFixed(1)}%`, pnl.foodCostPct > 40 ? '#EF4444' : '#0F1B2D', `${money(pnl.cogs)} food + packaging`],
-            ['Salary cost', `${pnl.salaryPct.toFixed(1)}%`, '#6C63FF', `${money(pnl.salaryLine)} · ${pnl.employees.length} staff`],
-            ['Rent', `${pnl.rentPct.toFixed(1)}%`, '#0F1B2D', 'of sales'],
+            ['Total sales', money(pnl.sales.total), '#16A34A', 'From daily sales / bills'],
+            ['Inventory bought', money(pnl.cogs), '#F59E0B', `${pnl.foodCostPct.toFixed(1)}% of sales`],
+            ['Gross profit', signed(pnl.grossProfit), pnl.grossProfit >= 0 ? '#16A34A' : '#EF4444', `${(pnl.grossMargin || 0).toFixed(1)}% margin (Sales - Inventory)`],
+            ['Worker salaries', money(pnl.salaryLine), '#6C63FF', `${money(pnl.salaryLine)} · ${pnl.employees.length} staff`],
+            ['Other expenses', money(pnl.otherExpenses || 0), '#0F1B2D', 'rent, utilities, gas, misc'],
           ].map(([l, v, c, sub]) => (
             <div key={l} className="card">
-              <p style={{ fontSize: 12, color: '#8A94A6', fontWeight: 500, textTransform: 'uppercase' }}>{l}</p>
-              <p style={{ fontSize: 26, fontWeight: 700, color: c, marginTop: 8 }}>{v}</p>
+              <p style={{ fontSize: 11, color: '#8A94A6', fontWeight: 600, textTransform: 'uppercase' }}>{l}</p>
+              <p style={{ fontSize: 24, fontWeight: 700, color: c, marginTop: 6 }}>{v}</p>
               <p style={{ fontSize: 11, color: '#8A94A6', marginTop: 4 }}>{sub}</p>
             </div>
           ))}
@@ -97,18 +98,27 @@ export default function PandL() {
         <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 20 }}>
           <div className="card" style={{ flex: '1 1 380px', minWidth: 0, padding: 0, overflow: 'hidden' }}>
             <h3 style={{ fontSize: 14, fontWeight: 700, padding: '16px 12px 10px' }}>Statement - {pnl.label}</h3>
-            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '4px 12px' }}>SALES</p>
+            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '4px 12px' }}>1. SALES</p>
             {channels.map(([l, v]) => row(l, v, { indent: true, pct: pc(v) }))}
             {row('Total sales', pnl.sales.total, { bold: true })}
-            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '10px 12px 4px' }}>COST OF GOODS</p>
-            {row('Food & raw material', groupAmt('Food'), { indent: true, pct: pc(groupAmt('Food')) })}
-            {row('Containers & packaging', groupAmt('Packaging'), { indent: true, pct: pc(groupAmt('Packaging')) })}
-            {row('Gross profit', pnl.grossProfit, { bold: true, pct: pc(pnl.grossProfit) })}
-            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '10px 12px 4px' }}>OPERATING EXPENSES</p>
-            {row('Salaries & wages', pnl.salaryLine, { indent: true, pct: pc(pnl.salaryLine) })}
+
+            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '10px 12px 4px' }}>2. INVENTORY (COST OF GOODS)</p>
+            {pnl.inventoryPurchases > 0 ? (
+              row('Inventory bought (purchases)', pnl.inventoryPurchases, { indent: true, pct: pc(pnl.inventoryPurchases) })
+            ) : (
+              <>
+                {row('Food & raw material', groupAmt('Food'), { indent: true, pct: pc(groupAmt('Food')) })}
+                {row('Containers & packaging', groupAmt('Packaging'), { indent: true, pct: pc(groupAmt('Packaging')) })}
+              </>
+            )}
+            {row('Gross profit (Sales − Inventory)', pnl.grossProfit, { bold: true, pct: pc(pnl.grossProfit), color: pnl.grossProfit >= 0 ? '#16A34A' : '#EF4444' })}
+
+            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '10px 12px 4px' }}>3. OPERATING OVERHEADS & SALARIES</p>
+            {row('Salaries & wages (Workers)', pnl.salaryLine, { indent: true, pct: pc(pnl.salaryLine) })}
             {pnl.opexLines.map(l => row(LABELS[l.group] || l.group, l.amount, { indent: true, pct: pc(l.amount) }))}
-            {row('Total operating expenses', pnl.opex, { bold: true })}
-            {row(isProfit ? 'NET PROFIT' : 'NET LOSS', pnl.netProfit, { bold: true, color: isProfit ? '#16A34A' : '#EF4444', pct: pc(pnl.netProfit) })}
+            {row('Total overheads (Salaries + Other Expenses)', pnl.opex, { bold: true })}
+
+            {row(isProfit ? 'NET PROFIT (Gross Profit − Overheads)' : 'NET LOSS', pnl.netProfit, { bold: true, color: isProfit ? '#16A34A' : '#EF4444', pct: pc(pnl.netProfit) })}
             {(pnl.tax > 0 || pnl.transfer > 0) && (
               <>
                 <p style={{ fontSize: 11, fontWeight: 700, color: '#8A94A6', padding: '12px 12px 4px' }}>NOT COUNTED IN PROFIT</p>

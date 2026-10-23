@@ -113,15 +113,15 @@ function emptyNote(ws, row, col, text) {
 // ============================================================================================
 async function buildWorkbookBuffer(data, opts = {}) {
   const { products = [], transactions = [], expenses = [], dailySales = [], payroll = [], vendorBills = [] } = data;
-  const months = A.availableMonths({ dailySales, expenses, payroll });
-  const focusMonth = opts.month === 'all' ? null : (opts.month && months.includes(opts.month) ? opts.month : A.defaultMonth({ dailySales, expenses, payroll }));
-  const focus = A.computePnL({ dailySales, expenses, payroll }, focusMonth);
-  const pnlMonths = months.slice(-12);
-  const pnlBy = Object.fromEntries(pnlMonths.map(m => [m, A.computePnL({ dailySales, expenses, payroll }, m)]));
-  const periodLabel = focusMonth ? A.monthLabel(focusMonth) : 'All months';
   const { junkProducts, junkTx, ids: junkIds } = A.findImportJunk(products, transactions);
   const realProducts = products.filter(p => !junkIds.has(p.id));
   const realTx = transactions.filter(t => !junkIds.has(t.productId));
+  const months = A.availableMonths({ dailySales, expenses, payroll, transactions: realTx });
+  const focusMonth = opts.month === 'all' ? null : (opts.month && months.includes(opts.month) ? opts.month : A.defaultMonth({ dailySales, expenses, payroll, transactions: realTx }));
+  const focus = A.computePnL({ dailySales, expenses, payroll, transactions: realTx }, focusMonth);
+  const pnlMonths = months.slice(-12);
+  const pnlBy = Object.fromEntries(pnlMonths.map(m => [m, A.computePnL({ dailySales, expenses, payroll, transactions: realTx }, m)]));
+  const periodLabel = focusMonth ? A.monthLabel(focusMonth) : 'All months';
   const checks = A.dataChecks(data);
 
   const wb = new ExcelJS.Workbook();
@@ -267,7 +267,7 @@ async function buildWorkbookBuffer(data, opts = {}) {
       const tc = ws.getCell(rr, totalCol);
       if (pct) {
         // percentage rows: recompute from total column cells of the numerator/denominator
-        tc.value = { formula: formula(L(totalCol)), result: getter(A.computePnL({ dailySales, expenses, payroll }, null)) };
+        tc.value = { formula: formula(L(totalCol)), result: getter(A.computePnL({ dailySales, expenses, payroll, transactions: realTx }, null)) };
       } else {
         tc.value = { formula: `SUM(${L(3)}${rr}:${L(totalCol - 1)}${rr})`, result: sum(results) };
       }

@@ -6,18 +6,21 @@ import { fmtQty } from '../utils';
 import MonthPicker from '../components/MonthPicker';
 import { downloadStatistics } from '../components/downloadExport';
 
-const KpiCard = ({ label, value, valueColor = '#0F1B2D', icon }) => (
-  <div className="card" style={{ flex: 1, minWidth: 0 }}>
-    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12 }}>
-      <p style={{ fontSize: 12, color: '#8A94A6', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</p>
+const KpiCard = ({ label, value, sub, valueColor = '#0F1B2D', icon, bg }) => (
+  <div className="card" style={{ flex: '1 1 200px', minWidth: 0, background: bg || '#fff' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8 }}>
+      <p style={{ fontSize: 11, color: '#8A94A6', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</p>
       <span style={{ fontSize: 20 }}>{icon}</span>
     </div>
-    <p style={{ fontSize: 26, fontWeight: 700, color: valueColor, lineHeight: 1 }}>{value}</p>
+    <p style={{ fontSize: 24, fontWeight: 800, color: valueColor, lineHeight: 1.1 }}>{value}</p>
+    {sub && <p style={{ fontSize: 11, color: '#8A94A6', marginTop: 4 }}>{sub}</p>}
   </div>
 );
 
 const isAdmin = () => localStorage.getItem('role') === 'ADMIN';
-const inr = (n) => `₹${Math.abs(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+const inr = (n) => `₹${Math.abs(Number(n) || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+const inr0 = (n) => `₹${Math.abs(Number(n) || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+const signedInr = (n) => `${Number(n) < 0 ? '-' : ''}${inr(n)}`;
 
 const EmptyState = ({ text }) => (
   <p style={{ fontSize: 13, color: '#8A94A6', textAlign: 'center', padding: '28px 0' }}>{text}</p>
@@ -26,15 +29,22 @@ const EmptyState = ({ text }) => (
 export default function Dashboard() {
   const [stats, setStats] = useState({
     totalSales: 0,
+    totalInventory: 0,
     totalPurchases: 0,
+    grossProfit: 0,
+    grossMargin: 0,
+    salaryCost: 0,
+    otherExpenses: 0,
     totalExpenses: 0,
     profit: 0,
     closingStockValue: 0,
     months: [],
     monthly: [],
+    byDay: [],
   });
-  const [month, setMonth] = useState(null); // null = latest month that has data
+  const [month, setMonth] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [chartView, setChartView] = useState('daily'); // 'daily' | 'monthly'
 
   const [products, setProducts] = useState([]);
   const [transactions, setTransactions] = useState([]);
@@ -45,24 +55,6 @@ export default function Dashboard() {
     fetch(`${API}/api/transactions`, { headers }).then(r => r.ok ? r.json() : []).then(d => Array.isArray(d) && setTransactions(d)).catch(console.error);
   }, []);
 
-  const monthly = React.useMemo(() => {
-    const out = [];
-    const now = new Date();
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      out.push({ key: `${d.getFullYear()}-${d.getMonth()}`, month: d.toLocaleString('en-US', { month: 'short' }), Sales: 0, Purchases: 0 });
-    }
-    transactions.forEach(t => {
-      const d = new Date(t.createdAt);
-      const row = out.find(r => r.key === `${d.getFullYear()}-${d.getMonth()}`);
-      if (!row) return;
-      if (t.type === 'SALE') row.Sales += t.total;
-      if (t.type === 'PURCHASE') row.Purchases += t.total;
-    });
-    return out;
-  }, [transactions]);
-
-  const hasChartData = monthly.some(m => m.Sales > 0 || m.Purchases > 0);
   const recent = [...transactions].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 8);
   const lowStock = products.filter(p => p.quantity <= (p.reorderLevel ?? 10)).sort((a, b) => a.quantity - b.quantity).slice(0, 8);
 
@@ -89,9 +81,18 @@ export default function Dashboard() {
     try { await downloadStatistics(month); } catch (err) { console.error(err); alert(err.message || 'Export failed'); } finally { setExporting(false); }
   };
 
+  const dailyChartData = (stats.byDay || []).map(d => ({
+    day: d.date.slice(8, 10) + '/' + d.date.slice(5, 7),
+    fullDate: d.date,
+    Sales: d.sales,
+    Inventory: d.inventory,
+    Profit: d.profit,
+  }));
+
+  const overheadsTotal = (stats.salaryCost || 0) + (stats.otherExpenses || 0);
+
   return (
     <div className="page-fade" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      {/* Live pulse bar */}
       <div className="pulse-bar" style={{
         height: 3, background: 'linear-gradient(90deg, #2ECC71, #27AE60, #2ECC71)',
         flexShrink: 0,
@@ -103,46 +104,143 @@ export default function Dashboard() {
         {isAdmin() && (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
             <MonthPicker months={stats.months || []} value={month} onChange={setMonth} />
-            <p style={{ fontSize: 12, color: '#8A94A6' }}>Showing <b>{stats.label || '—'}</b> · same numbers as the P&L page</p>
+            <p style={{ fontSize: 12, color: '#8A94A6' }}>Showing <b>{stats.label || '—'}</b> · Live sales, inventory costs &amp; profits</p>
           </div>
         )}
 
-        {/* KPI Row */}
-        <div style={{ display: 'flex', gap: 18, marginBottom: 24, flexWrap: 'wrap' }}>
-          <KpiCard label="Closing Stock Value" value={inr(stats.closingStockValue)} icon="📦" />
-          {isAdmin() && <KpiCard label="Total Costs" value={inr(stats.totalExpenses)} valueColor="#F59E0B" icon="🧾" />}
-          {isAdmin() && <KpiCard label="Total Sales" value={inr(stats.totalSales)} icon="🛒" />}
+        {/* Primary KPI Row */}
+        <div style={{ display: 'flex', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
+          {isAdmin() && (
+            <KpiCard
+              label="Total Sales"
+              value={inr(stats.totalSales)}
+              sub="from daily sales / POS bills"
+              valueColor="#16A34A"
+              icon="🛒"
+            />
+          )}
+          {isAdmin() && (
+            <KpiCard
+              label="Inventory Purchases"
+              value={inr(stats.totalInventory || stats.totalPurchases)}
+              sub="stock bought in bills"
+              valueColor="#F59E0B"
+              icon="📦"
+            />
+          )}
+          {isAdmin() && (
+            <KpiCard
+              label="Gross Profit"
+              value={signedInr(stats.grossProfit ?? (stats.totalSales - (stats.totalInventory || 0)))}
+              sub={`${(stats.grossMargin || 0).toFixed(1)}% margin (Sales - Inventory)`}
+              valueColor={stats.grossProfit >= 0 ? '#16A34A' : '#EF4444'}
+              bg="#F8FFF9"
+              icon="📈"
+            />
+          )}
+          {isAdmin() && (
+            <KpiCard
+              label="Salaries & Overhead"
+              value={inr(overheadsTotal)}
+              sub={`${inr0(stats.salaryCost)} payroll + ${inr0(stats.otherExpenses)} misc`}
+              valueColor="#6C63FF"
+              icon="🧾"
+            />
+          )}
           {isAdmin() && (
             <KpiCard
               label={stats.profit < 0 ? 'Net Loss' : 'Net Profit'}
-              value={`${stats.profit < 0 ? '-' : ''}${inr(stats.profit)}`}
+              value={signedInr(stats.profit)}
+              sub={`${(stats.margin || 0).toFixed(1)}% net margin after all costs`}
               valueColor={stats.profit < 0 ? '#EF4444' : '#16A34A'}
+              bg={stats.profit >= 0 ? '#F0FBF4' : '#FEE2E2'}
               icon="💰"
             />
           )}
+          <KpiCard
+            label="Closing Stock Value"
+            value={inr(stats.closingStockValue)}
+            sub="warehouse / kitchen stock value"
+            icon="🏷️"
+          />
         </div>
 
-        {/* Sales vs Costs vs Profit */}
+        {/* Charts: Toggle Daily Trend vs Last 6 Months */}
         {isAdmin() && (
           <div className="card" style={{ marginBottom: 24 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Sales vs Costs vs Profit (last 6 months)</h3>
-            {(stats.monthly || []).length > 0 ? (
-              <div style={{ width: '100%', height: 260 }}>
-                <ResponsiveContainer>
-                  <BarChart data={(stats.monthly || []).map(m => ({ month: m.label, Sales: m.sales, Costs: m.expenses, Profit: m.profit }))} barGap={4}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E8EAED" />
-                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#8A94A6' }} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#8A94A6' }} />
-                    <Tooltip formatter={(v) => `${v < 0 ? '-' : ''}${inr(v)}`} />
-                    <Legend />
-                    <Bar dataKey="Sales" fill="#2ECC71" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="Costs" fill="#F59E0B" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="Profit" fill="#0F1B2D" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+              <div>
+                <h3 style={{ fontSize: 14, fontWeight: 700 }}>
+                  {chartView === 'daily' ? `Daily Sales vs Inventory vs Profit (${stats.label || 'Active Period'})` : 'Monthly Sales vs Costs vs Profit (last 6 months)'}
+                </h3>
+                <p style={{ fontSize: 12, color: '#8A94A6', marginTop: 2 }}>
+                  {chartView === 'daily'
+                    ? 'Day-by-day comparison: each day\'s sales minus inventory purchased = daily profit'
+                    : 'Month-by-month financial trajectory'}
+                </p>
               </div>
+              <div style={{ display: 'flex', gap: 4, background: '#F4F5F7', borderRadius: 8, padding: 3 }}>
+                <button
+                  onClick={() => setChartView('daily')}
+                  style={{
+                    padding: '5px 12px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                    background: chartView === 'daily' ? '#fff' : 'transparent', color: chartView === 'daily' ? '#0F1B2D' : '#8A94A6',
+                    boxShadow: chartView === 'daily' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                  }}
+                >
+                  📅 Daily Trend
+                </button>
+                <button
+                  onClick={() => setChartView('monthly')}
+                  style={{
+                    padding: '5px 12px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                    background: chartView === 'monthly' ? '#fff' : 'transparent', color: chartView === 'monthly' ? '#0F1B2D' : '#8A94A6',
+                    boxShadow: chartView === 'monthly' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                  }}
+                >
+                  📊 6 Months
+                </button>
+              </div>
+            </div>
+
+            {chartView === 'daily' ? (
+              dailyChartData.length > 0 ? (
+                <div style={{ width: '100%', height: 270 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={dailyChartData} barGap={4}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E8EAED" />
+                      <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#8A94A6' }} />
+                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#8A94A6' }} tickFormatter={(v) => `₹${Math.round(v / 1000)}k`} />
+                      <Tooltip formatter={(v) => `${v < 0 ? '-' : ''}${inr(v)}`} />
+                      <Legend />
+                      <Bar dataKey="Sales" fill="#2ECC71" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="Inventory" fill="#F59E0B" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="Profit" fill="#0F1B2D" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <EmptyState text="No daily sales or inventory recorded for this month yet. Upload daily sales bills or inventory orders to see the daily chart!" />
+              )
             ) : (
-              <EmptyState text="No sales or expenses recorded yet." />
+              (stats.monthly || []).length > 0 ? (
+                <div style={{ width: '100%', height: 270 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={(stats.monthly || []).map(m => ({ month: m.label, Sales: m.sales, Inventory: m.inventory || 0, Costs: m.expenses, Profit: m.profit }))} barGap={4}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E8EAED" />
+                      <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#8A94A6' }} />
+                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#8A94A6' }} tickFormatter={(v) => `₹${Math.round(v / 1000)}k`} />
+                      <Tooltip formatter={(v) => `${v < 0 ? '-' : ''}${inr(v)}`} />
+                      <Legend />
+                      <Bar dataKey="Sales" fill="#2ECC71" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="Inventory" fill="#F59E0B" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="Profit" fill="#0F1B2D" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <EmptyState text="No sales or expenses recorded yet." />
+              )
             )}
           </div>
         )}
@@ -150,12 +248,12 @@ export default function Dashboard() {
         <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           {/* Recent activity */}
           <div className="card" style={{ flex: '1 1 340px', minWidth: 0 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Recent activity</h3>
+            <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Recent stock transactions</h3>
             {recent.length === 0 && <EmptyState text="No transactions yet." />}
             {recent.map(t => (
               <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderTop: '1px solid #E8EAED', fontSize: 13 }}>
                 <div>
-                  <p style={{ fontWeight: 600 }}>{t.product?.name || 'Product'} <span style={{ color: '#8A94A6', fontWeight: 400 }}>× {fmtQty(t.quantity)}</span></p>
+                  <p style={{ fontWeight: 600 }}>{t.product?.name || 'Product'} <span style={{ color: '#8A94A6', fontWeight: 400 }}>× {fmtQty(t.quantity)} {t.product?.unit || ''}</span></p>
                   <p style={{ fontSize: 11, color: '#8A94A6', marginTop: 2 }}>{new Date(t.createdAt).toLocaleString()}</p>
                 </div>
                 <div style={{ textAlign: 'right' }}>
@@ -169,11 +267,11 @@ export default function Dashboard() {
           {/* Right column: low stock + export */}
           <div style={{ flex: '1 1 300px', display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
             <div className="card">
-              <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Low stock</h3>
+              <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Low stock alert</h3>
               {lowStock.length === 0 && <EmptyState text={products.length === 0 ? 'No products added yet.' : 'All products are well stocked.'} />}
               {lowStock.map(p => (
                 <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 0', borderTop: '1px solid #E8EAED', fontSize: 13 }}>
-                  <span style={{ fontWeight: 500 }}>{p.emoji} {p.name}</span>
+                  <span style={{ fontWeight: 500 }}>{p.emoji || '📦'} {p.name}</span>
                   <span style={{ fontWeight: 700, color: p.quantity === 0 ? '#EF4444' : '#F59E0B' }}>{fmtQty(p.quantity)} {p.unit || ''}</span>
                 </div>
               ))}

@@ -648,10 +648,13 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
       newQuantity = Math.round((newQuantity + qty) * 1000) / 1000;
     }
 
-    const total = Math.round(qty * product.price * 100) / 100;
+    const total = req.body.total !== undefined && req.body.total !== '' && !isNaN(parseFloat(req.body.total))
+      ? Math.round(parseFloat(req.body.total) * 100) / 100
+      : Math.round(qty * (type === 'PURCHASE' && product.costPrice ? product.costPrice : product.price) * 100) / 100;
+    const createdAt = req.body.date ? new Date(req.body.date) : new Date();
 
     const transaction = await prisma.transaction.create({
-      data: { productId: parseInt(productId), type, quantity: qty, total, userId: req.user.id }
+      data: { productId: parseInt(productId), type, quantity: qty, total, userId: req.user.id, createdAt }
     });
 
     await prisma.product.update({
@@ -980,12 +983,13 @@ app.delete('/api/sales-bills/day/:date', authenticateToken, isAdmin, async (req,
 
 // --- ACCOUNTING DATA (shared by dashboard, P&L page, Expenses page and the Excel export) ---
 async function loadAccounting() {
-  const [expenses, dailySales, payroll] = await Promise.all([
+  const [expenses, dailySales, payroll, transactions] = await Promise.all([
     prisma.expense.findMany(),
     prisma.dailySales.findMany(),
     prisma.payroll.findMany(),
+    prisma.transaction.findMany({ include: { product: true }, orderBy: { createdAt: 'desc' } }),
   ]);
-  return { expenses, dailySales, payroll };
+  return { expenses, dailySales, payroll, transactions };
 }
 // ?month=2026-09 -> that month, ?month=all -> all time, nothing -> the latest month that has sales
 function pickMonth(data, q) {
@@ -1014,25 +1018,55 @@ app.get('/api/accounts/pnl', authenticateToken, isAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// --- DAILY LEDGER & ACCUMULATED PROFIT ---
+app.get('/api/accounts/daily-ledger', authenticateToken, async (req, res) => {
+  try {
+    const data = await loadAccounting();
+    const month = pickMonth(data, req.query.month);
+    const pnl = Acc.computePnL(data, month);
+    res.json({
+      month,
+      label: pnl.label,
+      months: Acc.availableMonths(data).map(m => ({ key: m, label: Acc.monthLabel(m) })),
+      totalSales: pnl.sales.total,
+      totalInventory: pnl.cogs,
+      grossProfit: pnl.grossProfit,
+      grossMargin: pnl.grossMargin,
+      salaryCost: pnl.salaryLine,
+      otherExpenses: pnl.otherExpenses,
+      totalExpenses: pnl.totalExpenses,
+      netProfit: pnl.netProfit,
+      margin: pnl.margin,
+      byDay: pnl.byDay,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- DASHBOARD REPORT DATA ---
 app.get('/api/reports/dashboard', authenticateToken, async (req, res) => {
   try {
     const products = await prisma.product.findMany({ select: { quantity: true, openingStock: true, price: true } });
-    const transactions = await prisma.transaction.findMany({ select: { type: true, total: true } });
     const data = await loadAccounting();
     const month = pickMonth(data, req.query.month);
     const pnl = Acc.computePnL(data, month);
-    const totalPurchases = transactions.filter(t => t.type === 'PURCHASE').reduce((sum, t) => sum + t.total, 0);
     res.json({
       month, label: pnl.label,
       months: Acc.availableMonths(data).map(m => ({ key: m, label: Acc.monthLabel(m) })),
       totalSales: pnl.sales.total,
-      totalPurchases,                       // stock bought via Orders (not added to expenses - avoids double counting)
-      totalExpenses: pnl.totalExpenses,     // food + packaging + operating expenses + salaries
+      totalInventory: pnl.cogs,
+      totalPurchases: pnl.inventoryPurchases,
+      grossProfit: pnl.grossProfit,
+      grossMargin: pnl.grossMargin,
+      salaryCost: pnl.salaryLine,
+      otherExpenses: pnl.otherExpenses,
+      totalExpenses: pnl.totalExpenses,
       profit: pnl.netProfit,
       margin: pnl.margin,
       foodCostPct: pnl.foodCostPct,
       salaryPct: pnl.salaryPct,
+      byDay: pnl.byDay,
       openingStockValue: products.reduce((sum, p) => sum + (p.openingStock * p.price), 0),
       closingStockValue: products.reduce((sum, p) => sum + (p.quantity * p.price), 0),
       monthly: Acc.monthlySeries(data, 6),

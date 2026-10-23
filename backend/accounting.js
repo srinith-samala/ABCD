@@ -89,11 +89,12 @@ function findImportJunk(products, transactions) {
 const COGS_GROUPS = ['Food', 'Packaging'];
 const OPEX_ORDER = ['Gas', 'Transport', 'Staff', 'Commission', 'Rent', 'Marketing', 'Utilities', 'Maintenance', 'General'];
 
-function availableMonths({ dailySales = [], expenses = [], payroll = [] }) {
+function availableMonths({ dailySales = [], expenses = [], payroll = [], transactions = [] }) {
   const set = new Set();
   dailySales.forEach(s => set.add(monthKey(s.date)));
   expenses.forEach(e => set.add(monthKey(e.expenseDate || e.createdAt)));
   payroll.forEach(p => set.add(monthKey(p.month)));
+  transactions.filter(t => t.type === 'PURCHASE').forEach(t => set.add(monthKey(t.createdAt)));
   return [...set].sort();
 }
 
@@ -101,28 +102,73 @@ function availableMonths({ dailySales = [], expenses = [], payroll = [] }) {
 function defaultMonth(data) {
   const months = availableMonths(data);
   if (!months.length) return null;
-  const withSales = new Set(data.dailySales.map(s => monthKey(s.date)));
+  const withSales = new Set((data.dailySales || []).map(s => monthKey(s.date)));
   const candidates = months.filter(m => withSales.has(m));
   return (candidates.length ? candidates : months).slice(-1)[0];
 }
 
 function computePnL(data, month) {
-  const { dailySales = [], expenses = [], payroll = [] } = data;
+  const { dailySales = [], expenses = [], payroll = [], transactions = [] } = data;
   const inMonth = (d) => (month ? monthKey(d) === month : true);
 
   const sales = { cash: 0, card: 0, upi: 0, zomato: 0, total: 0, discount: 0 };
   const byDayMap = new Map();
+
+  // 1. Process daily sales
   dailySales.filter(s => inMonth(s.date)).forEach(s => {
     sales.cash += s.cash; sales.card += s.card; sales.upi += s.upi; sales.zomato += s.zomato; sales.discount += s.discount || 0;
     const k = dayKey(s.date);
-    const r = byDayMap.get(k) || { date: k, cash: 0, card: 0, upi: 0, zomato: 0, total: 0 };
+    const r = byDayMap.get(k) || { date: k, cash: 0, card: 0, upi: 0, zomato: 0, sales: 0, inventory: 0, inventoryUnits: 0, items: [] };
     r.cash += s.cash; r.card += s.card; r.upi += s.upi; r.zomato += s.zomato;
-    r.total = r.cash + r.card + r.upi + r.zomato;
+    r.sales = round2(r.cash + r.card + r.upi + r.zomato);
     byDayMap.set(k, r);
   });
-  sales.total = sales.cash + sales.card + sales.upi + sales.zomato;
-  const byDay = [...byDayMap.values()].sort((a, b) => a.date.localeCompare(b.date));
+  sales.total = round2(sales.cash + sales.card + sales.upi + sales.zomato);
 
+  // 2. Process purchase transactions (inventory brought)
+  const purchaseTx = transactions.filter(t => t.type === 'PURCHASE' && inMonth(t.createdAt));
+  const purchaseTotal = round2(purchaseTx.reduce((sum, t) => sum + (Number(t.total) || 0), 0));
+  const purchaseUnits = round2(purchaseTx.reduce((sum, t) => sum + (Number(t.quantity) || 0), 0));
+
+  purchaseTx.forEach(t => {
+    const k = dayKey(t.createdAt);
+    const r = byDayMap.get(k) || { date: k, cash: 0, card: 0, upi: 0, zomato: 0, sales: 0, inventory: 0, inventoryUnits: 0, items: [] };
+    r.inventory = round2((r.inventory || 0) + (Number(t.total) || 0));
+    r.inventoryUnits = round2((r.inventoryUnits || 0) + (Number(t.quantity) || 0));
+    r.items.push({
+      id: t.id,
+      productName: t.product?.name || 'Item',
+      quantity: t.quantity,
+      unit: t.product?.unit || 'pcs',
+      total: t.total,
+      price: t.product?.price || 0,
+      createdAt: t.createdAt,
+    });
+    byDayMap.set(k, r);
+  });
+
+  // Calculate day-by-day profit & running accumulated totals
+  let accSales = 0;
+  let accInv = 0;
+  let accProfit = 0;
+  const byDay = [...byDayMap.values()].sort((a, b) => a.date.localeCompare(b.date)).map(d => {
+    const dayProfit = round2(d.sales - d.inventory);
+    const dayMargin = d.sales > 0 ? round2((dayProfit / d.sales) * 100) : 0;
+    accSales = round2(accSales + d.sales);
+    accInv = round2(accInv + d.inventory);
+    accProfit = round2(accProfit + dayProfit);
+    return {
+      ...d,
+      total: d.sales, // for backward compatibility
+      profit: dayProfit,
+      margin: dayMargin,
+      accumulatedSales: accSales,
+      accumulatedInventory: accInv,
+      accumulatedProfit: accProfit,
+    };
+  });
+
+  // 3. Process expenses (overheads & manual expense rows)
   const groupTotals = {};
   const catMap = new Map();
   const modeMap = {};
@@ -142,24 +188,30 @@ function computePnL(data, month) {
   });
 
   const pay = payroll.filter(p => inMonth(p.month));
-  const salaryCost = pay.reduce((s, p) => s + p.netPay, 0);
+  const salaryCost = round2(pay.reduce((s, p) => s + p.netPay, 0));
 
-  const cogs = COGS_GROUPS.reduce((s, g) => s + (groupTotals[g] || 0), 0);
-  const opexExpenseRows = Object.keys(groupTotals).filter(g => !COGS_GROUPS.includes(g));
+  // If purchase transactions are present, they are the primary inventory cost (COGS).
+  // If no transactions exist, fallback to Food & Packaging expenses.
+  const expenseFoodCost = COGS_GROUPS.reduce((s, g) => s + (groupTotals[g] || 0), 0);
+  const cogs = purchaseTotal > 0 ? purchaseTotal : expenseFoodCost;
+
+  // Operating expenses (exclude COGS groups if purchaseTotal is used, to avoid double counting)
+  const opexExpenseRows = Object.keys(groupTotals).filter(g => purchaseTotal > 0 ? (!COGS_GROUPS.includes(g) && g !== 'Salary') : (!COGS_GROUPS.includes(g) && g !== 'Salary'));
   const staffExpenseSalary = groupTotals['Salary'] || 0; // manual "Salary" expense rows count with payroll
   const opexLines = [];
-  const orderedGroups = [...OPEX_ORDER, ...opexExpenseRows.filter(g => !OPEX_ORDER.includes(g) && g !== 'Salary')];
+  const orderedGroups = [...OPEX_ORDER, ...opexExpenseRows.filter(g => !OPEX_ORDER.includes(g))];
   orderedGroups.forEach(g => { if (groupTotals[g]) opexLines.push({ group: g, amount: groupTotals[g] }); });
-  const salaryLine = salaryCost + staffExpenseSalary;
-  const opex = opexLines.reduce((s, l) => s + l.amount, 0) + salaryLine;
+  const otherExpenses = round2(opexLines.reduce((s, l) => s + l.amount, 0));
+  const salaryLine = round2(salaryCost + staffExpenseSalary);
+  const opex = round2(otherExpenses + salaryLine);
 
-  const totalExpenses = cogs + opex; // everything that reduces profit
-  const grossProfit = sales.total - cogs;
-  const netProfit = sales.total - totalExpenses;
+  const totalExpenses = round2(cogs + opex); // Inventory + Operating Overheads + Salaries
+  const grossProfit = round2(sales.total - cogs);
+  const netProfit = round2(grossProfit - opex); // Sales - Inventory - Salaries - Other Expenses
   const pct = (n) => (sales.total > 0 ? (n / sales.total) * 100 : 0);
 
   const byGroup = [
-    ...COGS_GROUPS.filter(g => groupTotals[g]).map(g => ({ group: g, amount: groupTotals[g] })),
+    ...(cogs > 0 ? [{ group: 'Inventory / Cost of Goods', amount: cogs }] : []),
     ...opexLines,
     ...(salaryLine ? [{ group: 'Salary & Wages', amount: salaryLine }] : []),
   ].sort((a, b) => b.amount - a.amount).map(r => ({ ...r, pct: pct(r.amount) }));
@@ -173,9 +225,11 @@ function computePnL(data, month) {
   return {
     month, label: month ? monthLabel(month) : 'All time',
     sales, byDay,
-    cogs, grossProfit, opexLines, salaryLine, salaryCost, opex,
+    inventoryPurchases: purchaseTotal,
+    inventoryUnits: purchaseUnits,
+    cogs, grossProfit, opexLines, otherExpenses, salaryLine, salaryCost, opex,
     totalExpenses, netProfit,
-    margin: pct(netProfit), foodCostPct: pct(cogs), salaryPct: pct(salaryLine),
+    margin: pct(netProfit), grossMargin: pct(grossProfit), foodCostPct: pct(cogs), salaryPct: pct(salaryLine),
     rentPct: pct(groupTotals['Rent'] || 0),
     tax, transfer, byGroup, byCategory, byMode,
     expenseRows: rows,
@@ -187,7 +241,17 @@ function monthlySeries(data, count = 6) {
   const months = availableMonths(data).slice(-count);
   return months.map(m => {
     const p = computePnL(data, m);
-    return { month: m, label: monthLabel(m), sales: round2(p.sales.total), expenses: round2(p.totalExpenses), salary: round2(p.salaryLine), profit: round2(p.netProfit), margin: round2(p.margin) };
+    return {
+      month: m,
+      label: monthLabel(m),
+      sales: round2(p.sales.total),
+      inventory: round2(p.cogs),
+      grossProfit: round2(p.grossProfit),
+      expenses: round2(p.totalExpenses),
+      salary: round2(p.salaryLine),
+      profit: round2(p.netProfit),
+      margin: round2(p.margin),
+    };
   });
 }
 

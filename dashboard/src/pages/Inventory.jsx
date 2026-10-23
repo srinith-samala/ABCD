@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { API } from '../config';
 import Header from '../components/Header';
 import ProductCard from '../components/ProductCard';
@@ -6,18 +6,34 @@ import ProductDrawer, { getStatus } from '../components/ProductDrawer';
 import ImportProductsModal from '../components/ImportProductsModal';
 import ProductFormModal from '../components/ProductFormModal';
 import { fmtQty } from '../utils';
+import Portal from '../components/Portal';
+
+const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+const inr0 = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+const fmtDay = (d) => new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
 
 export default function Inventory() {
-  const [tab, setTab] = useState('All Items');
+  const [tab, setTab] = useState('All Items'); // 'All Items' | 'Daily Inventory' | 'Low Stock' | 'Receiving Log'
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('name');
   const [catFilter, setCatFilter] = useState('All');
+  const [dateFilter, setDateFilter] = useState('');
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState(['All']);
   const [transactions, setTransactions] = useState([]);
   const [selected, setSelected] = useState(null);
   const [showImport, setShowImport] = useState(false);
   const [showForm, setShowForm] = useState(false);
+
+  // Quick Add Stock Item Modal
+  const [showAddStock, setShowAddStock] = useState(false);
+  const [stockEntry, setStockEntry] = useState({
+    productId: '',
+    quantity: '',
+    total: '',
+    date: new Date().toISOString().slice(0, 10),
+  });
+  const [savingStock, setSavingStock] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -29,7 +45,10 @@ export default function Inventory() {
       ]);
       if (resProd.ok) setProducts(await resProd.json());
       if (resCat.ok) setCategories(['All', ...(await resCat.json()).map(c => c.name)]);
-      if (resTrans.ok) setTransactions((await resTrans.json()).filter(t => t.type === 'PURCHASE'));
+      if (resTrans.ok) {
+        const txs = await resTrans.json();
+        setTransactions(txs.filter(t => t.type === 'PURCHASE'));
+      }
     } catch (err) {
       console.error(err);
     }
@@ -39,8 +58,42 @@ export default function Inventory() {
     fetchData();
   }, []);
 
-  const tabs = ['All Items', 'Low Stock', 'Receiving Log'];
+  const handleSaveStockEntry = async (e) => {
+    e.preventDefault();
+    if (!stockEntry.productId) return alert('Please select a product');
+    setSavingStock(true);
+    try {
+      const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` };
+      const res = await fetch(`${API}/api/transactions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          type: 'PURCHASE',
+          productId: parseInt(stockEntry.productId),
+          quantity: parseFloat(stockEntry.quantity),
+          total: stockEntry.total !== '' ? parseFloat(stockEntry.total) : undefined,
+          date: stockEntry.date ? `${stockEntry.date}T12:00:00.000Z` : undefined,
+        }),
+      });
+      if (res.ok) {
+        setShowAddStock(false);
+        setStockEntry({ productId: '', quantity: '', total: '', date: new Date().toISOString().slice(0, 10) });
+        fetchData();
+      } else {
+        const j = await res.json().catch(() => ({}));
+        alert(j.error || 'Failed to save inventory entry');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error connecting to server');
+    } finally {
+      setSavingStock(false);
+    }
+  };
 
+  const tabs = ['All Items', '📅 Daily Inventory', 'Low Stock', 'Receiving Log'];
+
+  // Master stock list filtering
   const filtered = products
     .filter(p => {
       const q = search.toLowerCase();
@@ -51,41 +104,74 @@ export default function Inventory() {
     })
     .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name) : sort === 'stock' ? b.quantity - a.quantity : b.price - a.price);
 
+  // Group receiving logs by Date
+  const dailyGroups = useMemo(() => {
+    const map = new Map();
+    transactions.forEach(t => {
+      const d = new Date(t.createdAt).toISOString().slice(0, 10);
+      if (!map.has(d)) {
+        map.set(d, { date: d, items: [], totalAmount: 0, totalUnits: 0 });
+      }
+      const g = map.get(d);
+      g.items.push(t);
+      g.totalAmount += Number(t.total || 0);
+      g.totalUnits += Number(t.quantity || 0);
+    });
+    let list = [...map.values()].sort((a, b) => b.date.localeCompare(a.date));
+    if (dateFilter) {
+      list = list.filter(g => g.date === dateFilter);
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.map(g => ({
+        ...g,
+        items: g.items.filter(it => (it.product?.name || '').toLowerCase().includes(q))
+      })).filter(g => g.items.length > 0);
+    }
+    return list;
+  }, [transactions, dateFilter, search]);
+
   const inStock = products.filter(p => getStatus(p.quantity, p.reorderLevel) === 'In Stock').length;
   const lowStock = products.filter(p => getStatus(p.quantity, p.reorderLevel) === 'Low Stock').length;
   const outOfStock = products.filter(p => getStatus(p.quantity, p.reorderLevel) === 'Out of Stock').length;
+  const totalStockValue = products.reduce((sum, p) => sum + (p.quantity * (p.price || 0)), 0);
 
-  const fieldStyle = { padding: '9px 14px', borderRadius: 10, border: '1.5px solid #E8EAED', fontSize: 13, fontFamily: 'DM Sans', outline: 'none' };
+  const fieldStyle = { padding: '9px 14px', borderRadius: 10, border: '1.5px solid #E8EAED', fontSize: 13, fontFamily: 'DM Sans', outline: 'none', background: '#fff' };
 
   return (
     <div className="page-fade" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <Header title="Inventory" subtitle="Manage your stock levels and receiving logs" />
+      <Header title="Inventory" subtitle="Manage master stock, date-categorized daily inventory bills, and receiving logs" />
 
       <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
-        {/* Stock summary */}
+        {/* Stock summary badges */}
         <div style={{
-          display: 'flex', gap: 16, marginBottom: 20,
-          background: '#fff', borderRadius: 12, padding: '12px 20px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.05)', flexWrap: 'wrap',
+          display: 'flex', gap: 14, marginBottom: 20,
+          background: '#fff', borderRadius: 12, padding: '14px 20px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.05)', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between'
         }}>
-          {[
-            { label: 'Total SKUs', value: products.length, bg: '#EEF0FF', color: '#6C63FF' },
-            { label: 'In Stock', value: inStock, bg: '#D6F5E3', color: '#16A34A' },
-            { label: 'Low Stock', value: lowStock, bg: '#FEF3C7', color: '#92400E' },
-            { label: 'Out of Stock', value: outOfStock, bg: '#FEE2E2', color: '#EF4444' },
-          ].map(({ label, value, bg, color }) => (
-            <span key={label} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 700, background: bg, color }}>
-              {label}: {value}
-            </span>
-          ))}
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            {[
+              { label: 'Total SKUs', value: products.length, bg: '#EEF0FF', color: '#6C63FF' },
+              { label: 'In Stock', value: inStock, bg: '#D6F5E3', color: '#16A34A' },
+              { label: 'Low Stock', value: lowStock, bg: '#FEF3C7', color: '#92400E' },
+              { label: 'Out of Stock', value: outOfStock, bg: '#FEE2E2', color: '#EF4444' },
+            ].map(({ label, value, bg, color }) => (
+              <span key={label} style={{ padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 700, background: bg, color }}>
+                {label}: {value}
+              </span>
+            ))}
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#0F1B2D' }}>
+            Total Stock Value: <span style={{ color: '#16A34A', fontWeight: 800 }}>{inr(totalStockValue)}</span>
+          </div>
         </div>
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 2, background: '#F4F5F7', borderRadius: 10, padding: 4, width: 'fit-content', marginBottom: 20 }}>
           {tabs.map(t => (
             <button key={t} onClick={() => setTab(t)} style={{
-              padding: '7px 18px', borderRadius: 8, border: 'none', cursor: 'pointer',
-              fontFamily: 'DM Sans', fontSize: 13, fontWeight: 500,
+              padding: '8px 18px', borderRadius: 8, border: 'none', cursor: 'pointer',
+              fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600,
               background: tab === t ? '#fff' : 'transparent',
               color: tab === t ? '#0F1B2D' : '#8A94A6',
               boxShadow: tab === t ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
@@ -94,9 +180,118 @@ export default function Inventory() {
           ))}
         </div>
 
-        {tab !== 'Receiving Log' ? (
+        {/* ===================== TAB 1: DAILY INVENTORY & BILLS ===================== */}
+        {tab === '📅 Daily Inventory' && (
+          <div>
+            <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', flex: 1, minWidth: 260 }}>
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={e => setDateFilter(e.target.value)}
+                  style={{ ...fieldStyle, minWidth: 150 }}
+                  title="Filter by specific date"
+                />
+                {dateFilter && (
+                  <button onClick={() => setDateFilter('')} style={{ padding: '8px 12px', borderRadius: 10, background: '#F4F5F7', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                    Clear Date ✕
+                  </button>
+                )}
+                <input
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="Search item in bills..."
+                  style={{ ...fieldStyle, flex: 1, minWidth: 180 }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button onClick={() => setShowImport(true)} style={{ padding: '9px 18px', borderRadius: 10, background: '#fff', color: '#0F1B2D', border: '1.5px solid #E8EAED', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>⬆ Import CSV / Excel</button>
+                <button onClick={() => setShowAddStock(true)} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Daily Bill / Item</button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {dailyGroups.map(group => (
+                <div key={group.date} className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                  {/* Daily Bill Header Banner */}
+                  <div style={{
+                    padding: '14px 20px', background: '#FAFBFC', borderBottom: '1.5px solid #E8EAED',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <span style={{ fontSize: 18 }}>📅</span>
+                      <div>
+                        <h3 style={{ fontSize: 15, fontWeight: 800, color: '#0F1B2D' }}>{fmtDay(group.date)}</h3>
+                        <p style={{ fontSize: 12, color: '#8A94A6', marginTop: 2 }}>{group.items.length} product(s) received</p>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ padding: '4px 12px', borderRadius: 16, background: '#EEF0FF', color: '#6C63FF', fontSize: 12, fontWeight: 700 }}>
+                        Total Units: {fmtQty(group.totalUnits)}
+                      </span>
+                      <span style={{ padding: '6px 14px', borderRadius: 16, background: '#D6F5E3', color: '#16A34A', fontSize: 15, fontWeight: 800 }}>
+                        Total Bill Amount: {inr(group.totalAmount)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Daily Items Table */}
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
+                      <thead>
+                        <tr style={{ background: '#fff', borderBottom: '1px solid #E8EAED', color: '#8A94A6', fontSize: 11, textTransform: 'uppercase' }}>
+                          <th style={{ padding: '10px 18px' }}>Product</th>
+                          <th style={{ padding: '10px 18px', textAlign: 'right' }}>Quantity</th>
+                          <th style={{ padding: '10px 18px', textAlign: 'right' }}>Unit Price</th>
+                          <th style={{ padding: '10px 18px', textAlign: 'right', fontWeight: 700, color: '#0F1B2D' }}>Total Amount from Bill</th>
+                          <th style={{ padding: '10px 18px', textAlign: 'center' }}>Time</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {group.items.map((row) => (
+                          <tr key={row.id} style={{ borderBottom: '1px solid #F4F5F7' }}>
+                            <td style={{ padding: '12px 18px', fontWeight: 600 }}>
+                              <span style={{ marginRight: 6 }}>{row.product?.emoji || '📦'}</span>
+                              {row.product?.name || 'Unknown'}
+                              {row.product?.category && (
+                                <span style={{ marginLeft: 8, fontSize: 11, color: '#8A94A6', background: '#F4F5F7', padding: '2px 8px', borderRadius: 6 }}>
+                                  {row.product.category.name || row.product.category}
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ padding: '12px 18px', textAlign: 'right', fontWeight: 700, color: '#2ECC71' }}>
+                              +{fmtQty(row.quantity)} <span style={{ fontSize: 12, fontWeight: 500, color: '#8A94A6' }}>{row.product?.unit || 'pcs'}</span>
+                            </td>
+                            <td style={{ padding: '12px 18px', textAlign: 'right', color: '#8A94A6' }}>
+                              ₹{row.product?.price || 0}
+                            </td>
+                            <td style={{ padding: '12px 18px', textAlign: 'right', fontWeight: 800, color: '#0F1B2D' }}>
+                              {inr(row.total)}
+                            </td>
+                            <td style={{ padding: '12px 18px', textAlign: 'center', color: '#8A94A6', fontSize: 12 }}>
+                              {new Date(row.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+
+              {dailyGroups.length === 0 && (
+                <div className="card" style={{ textAlign: 'center', padding: '48px 24px', color: '#8A94A6' }}>
+                  <p style={{ fontSize: 15, fontWeight: 600, color: '#0F1B2D', marginBottom: 6 }}>No date-categorized inventory bills found.</p>
+                  <p style={{ fontSize: 13, marginBottom: 16 }}>Click <b>+ Add Daily Bill / Item</b> or <b>Import CSV / Excel</b> to log inventory by date.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ===================== TAB 2 & 3: MASTER PRODUCTS / LOW STOCK ===================== */}
+        {(tab === 'All Items' || tab === 'Low Stock') && (
           <>
-            {/* Same toolbar + card grid as the Products page */}
             <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name or SKU..." style={{ ...fieldStyle, flex: 1, minWidth: 180 }} />
               <select value={catFilter} onChange={e => setCatFilter(e.target.value)} style={fieldStyle}>
@@ -119,13 +314,16 @@ export default function Inventory() {
               )}
             </div>
           </>
-        ) : (
+        )}
+
+        {/* ===================== TAB 4: RECEIVING LOG ===================== */}
+        {tab === 'Receiving Log' && (
           <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ margin: 0, width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr style={{ background: '#FAFBFC' }}>
-                    {['Date', 'Product', 'Qty Received', 'Total Cost', 'Logged By'].map(h => (
+                    {['Date', 'Product', 'Qty Received', 'Total Bill Cost', 'Logged By'].map(h => (
                       <th key={h} style={{ padding: '12px 16px', whiteSpace: 'nowrap', borderBottom: '1px solid #E8EAED' }}>{h}</th>
                     ))}
                   </tr>
@@ -133,15 +331,18 @@ export default function Inventory() {
                 <tbody>
                   {transactions.map((row, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid #F4F5F7' }}>
-                      <td style={{ padding: '12px 16px', color: '#8A94A6' }}>{new Date(row.createdAt).toLocaleDateString()}</td>
-                      <td style={{ padding: '12px 16px', fontWeight: 600 }}>{row.product?.name || 'Unknown'}</td>
-                      <td style={{ padding: '12px 16px', fontWeight: 700, color: '#2ECC71' }}>+{fmtQty(row.quantity)}</td>
-                      <td style={{ padding: '12px 16px', color: '#8A94A6' }}>₹{row.total}</td>
+                      <td style={{ padding: '12px 16px', color: '#8A94A6', fontWeight: 600 }}>{fmtDay(row.createdAt)}</td>
+                      <td style={{ padding: '12px 16px', fontWeight: 600 }}>
+                        <span style={{ marginRight: 6 }}>{row.product?.emoji || '📦'}</span>
+                        {row.product?.name || 'Unknown'}
+                      </td>
+                      <td style={{ padding: '12px 16px', fontWeight: 700, color: '#2ECC71' }}>+{fmtQty(row.quantity)} {row.product?.unit || ''}</td>
+                      <td style={{ padding: '12px 16px', fontWeight: 700, color: '#0F1B2D' }}>{inr(row.total)}</td>
                       <td style={{ padding: '12px 16px', color: '#8A94A6' }}>User ID {row.userId}</td>
                     </tr>
                   ))}
                   {transactions.length === 0 && (
-                    <tr><td colSpan="5" style={{ textAlign: 'center', padding: '24px', color: '#8A94A6' }}>No receiving logs found. Make a purchase to see logs here.</td></tr>
+                    <tr><td colSpan="5" style={{ textAlign: 'center', padding: '24px', color: '#8A94A6' }}>No receiving logs found. Make a purchase or import a bill to see logs here.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -149,6 +350,104 @@ export default function Inventory() {
           </div>
         )}
       </div>
+
+      {/* QUICK ADD STOCK BILL / ITEM MODAL */}
+      {showAddStock && (
+        <Portal><div style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 440, background: '#fff', borderRadius: 16, padding: 24, boxShadow: '0 8px 32px rgba(0,0,0,0.15)' }}>
+            <h3 style={{ fontSize: 18, marginBottom: 16, fontWeight: 700 }}>Add Inventory Item from Bill</h3>
+            <form onSubmit={handleSaveStockEntry} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Bill Date
+                <input
+                  required
+                  type="date"
+                  value={stockEntry.date}
+                  onChange={e => setStockEntry({ ...stockEntry, date: e.target.value })}
+                  style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box' }}
+                />
+              </label>
+
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Product
+                <select
+                  required
+                  value={stockEntry.productId}
+                  onChange={e => {
+                    const pid = e.target.value;
+                    const p = products.find(x => x.id === parseInt(pid));
+                    const qty = parseFloat(stockEntry.quantity) || 1;
+                    const rate = p ? (p.costPrice || p.price || 0) : 0;
+                    setStockEntry({
+                      ...stockEntry,
+                      productId: pid,
+                      total: stockEntry.total === '' ? String(Math.round(qty * rate * 100) / 100) : stockEntry.total,
+                    });
+                  }}
+                  style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc' }}
+                >
+                  <option value="" disabled>Select Product...</option>
+                  {products.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} (Current: {fmtQty(p.quantity)} {p.unit || ''}) - ₹{p.price}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div style={{ display: 'flex', gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Quantity
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="e.g. 10"
+                      value={stockEntry.quantity}
+                      onChange={e => {
+                        const q = e.target.value;
+                        const p = products.find(x => x.id === parseInt(stockEntry.productId));
+                        const rate = p ? (p.costPrice || p.price || 0) : 0;
+                        setStockEntry({
+                          ...stockEntry,
+                          quantity: q,
+                          total: (!stockEntry.total || stockEntry.total === '') && q ? String(Math.round(parseFloat(q) * rate * 100) / 100) : stockEntry.total,
+                        });
+                      }}
+                      style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    />
+                  </label>
+                </div>
+                <div style={{ flex: 1.2 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Total Bill Price (₹)
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="e.g. 2000"
+                      value={stockEntry.total}
+                      onChange={e => setStockEntry({ ...stockEntry, total: e.target.value })}
+                      style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', fontWeight: 700, boxSizing: 'border-box' }}
+                    />
+                  </label>
+                </div>
+              </div>
+              <p style={{ fontSize: 11, color: '#8A94A6' }}>
+                Note: This saves the exact bill total into {fmtDay(stockEntry.date)} inventory, directly quantifying your inventory cost for that date.
+              </p>
+
+              <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                <button type="submit" disabled={savingStock} style={{ flex: 1, padding: 10, background: '#2ECC71', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>
+                  {savingStock ? 'Saving...' : 'Add to Inventory'}
+                </button>
+                <button type="button" onClick={() => setShowAddStock(false)} style={{ flex: 1, padding: 10, background: '#F4F5F7', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div></Portal>
+      )}
 
       <ProductDrawer product={selected} onClose={() => setSelected(null)} fetchProducts={fetchData} />
       {showForm && <ProductFormModal onClose={() => setShowForm(false)} onSaved={fetchData} />}
