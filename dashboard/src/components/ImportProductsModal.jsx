@@ -195,6 +195,21 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
               </div>
             </div>
 
+            {data.amountSource === 'total-column' && (
+              <p style={{ fontSize: 12.5, color: '#166534', background: '#DCFCE7', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+                ✅ Amounts are taken exactly from the file's <b>Total amount column{data.totalColumn ? ` (column ${data.totalColumn})` : ''}</b> - GST included. Price x quantity is not used.
+              </p>
+            )}
+            {data.amountSource === 'mixed' && (
+              <p style={{ fontSize: 12.5, color: '#92400E', background: '#FEF3C7', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+                ⚠️ {data.rowsWithoutTotal} row(s) have no value in the total column, so for those only price x quantity was used (GST not included). Check the lines below.
+              </p>
+            )}
+            {data.amountSource === 'calculated' && (
+              <p style={{ fontSize: 12.5, color: '#991B1B', background: '#FEE2E2', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+                ⚠️ No total / amount column was found in this file, so amounts are <b>price x quantity</b> (GST not included). If the file has the bill amount, rename that column heading to "Total" and upload again - or type the bill total below.
+              </p>
+            )}
             {(data.notes || []).map((n, i) => (
               <p key={i} style={{ fontSize: 12, color: '#075985', background: '#E0F2FE', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>ℹ️ {n}</p>
             ))}

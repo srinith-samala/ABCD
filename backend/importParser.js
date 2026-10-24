@@ -129,6 +129,31 @@ function inferQuantityColumn(ws, headerRowNo, cols) {
   return nextToUnit || cands.find(x => x.header !== '') || cands[0];
 }
 
+
+// When no heading says "Total"/"Amount", find the bill-amount column from the numbers: a column to the right of the price
+// whose value is about quantity x price (or a bit more, because of GST) on most rows.
+function inferTotalColumn(ws, headerRowNo, cols) {
+  if (cols.price === undefined || cols.quantity === undefined) return null;
+  const used = new Set(Object.values(cols));
+  const hdr = ws.getRow(headerRowNo).values;
+  const lastRow = Math.min(ws.rowCount, headerRowNo + 80);
+  let best = null;
+  for (let c = 1; c < hdr.length; c++) {
+    if (used.has(c)) continue;
+    let rows = 0; let ok = 0;
+    for (let r = headerRowNo + 1; r <= lastRow; r++) {
+      const v = ws.getRow(r).values;
+      if (cols.name !== undefined && !cellText(v[cols.name])) continue;
+      const q = toNumber(cellText(v[cols.quantity])); const p = toNumber(cellText(v[cols.price])); const t = toNumber(cellText(v[c]));
+      if (!(q > 0) || !(p > 0)) continue;
+      rows++;
+      if (Number.isFinite(t) && t > 0) { const ratio = t / (q * p); if (ratio >= 0.97 && ratio <= 1.35) ok++; }
+    }
+    if (rows >= 2 && ok / rows >= 0.7 && (!best || ok / rows > best.share)) best = { c, share: ok / rows, header: cellText(hdr[c]) };
+  }
+  return best;
+}
+
 function colLetter(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
 
 async function parseProductsFile(buffer, filename) {
@@ -155,7 +180,16 @@ async function parseProductsFile(buffer, filename) {
         : `No heading found for quantities - they were read from column ${colLetter(guess.c)}.`);
     }
   }
+  if (cols.total === undefined) {
+    const t = inferTotalColumn(ws, headerRowNo, cols);
+    if (t) {
+      cols.total = t.c;
+      notes.push(`The bill-amount column${t.header ? ` ("${t.header}")` : ''} was found from the numbers (column ${colLetter(t.c)}); its amounts are recorded exactly as written.`);
+    }
+  }
   let fileTotal = null;
+  let subTotalSum = 0;
+  let rowsWithoutTotal = 0;
 
   const rows = [];
   const errors = [];
@@ -170,7 +204,10 @@ async function parseProductsFile(buffer, filename) {
     // the "TOTAL" line some bills have at the bottom is not a product - it is kept to double-check our own sum
     if ((SUMMARY_NAME.test(name) || (!name && totalRaw && !priceRaw && !get('quantity'))) && totalRaw) {
       const t = toNumber(totalRaw);
-      if (Number.isFinite(t)) fileTotal = round2((fileTotal || 0) + t);
+      if (Number.isFinite(t)) {
+        // "Sub total" lines (per bill) are added up; a "Total" / "Grand total" line is the final figure and replaces them
+        if (/^sub\s*total/i.test(name)) subTotalSum = round2(subTotalSum + t); else fileTotal = round2(t);
+      }
       continue;
     }
     if (SUMMARY_NAME.test(name)) continue;
@@ -208,6 +245,7 @@ async function parseProductsFile(buffer, filename) {
     }
 
     let lineTotal = null;
+    if (totalRaw === '' && quantity > 0) rowsWithoutTotal++;
     if (totalRaw !== '') {
       lineTotal = toNumber(totalRaw);
       if (Number.isNaN(lineTotal) || lineTotal < 0) { errors.push({ row: r, name, message: `Invalid total price "${totalRaw}"` }); continue; }
@@ -259,7 +297,10 @@ async function parseProductsFile(buffer, filename) {
   }
   const computedTotal = round2(rows.reduce((t, x) => t + (x.lineTotal || 0), 0));
   const checks = rows.filter(x => x.check).map(x => ({ row: x.rowNumber, name: x.name, message: x.check }));
-  return { rows, errors, ignoredSheets, notes, fileTotal, computedTotal, checks };
+  if (fileTotal === null && subTotalSum > 0) fileTotal = subTotalSum;
+  const hasTotalCol = cols.total !== undefined;
+  const amountSource = !hasTotalCol ? 'calculated' : (rowsWithoutTotal > 0 ? 'mixed' : 'total-column');
+  return { rows, errors, ignoredSheets, notes, fileTotal, computedTotal, checks, amountSource, rowsWithoutTotal, totalColumn: hasTotalCol ? colLetter(cols.total) : null };
 }
 
 // Identical lines (same product, same bill, same date) are combined. The same product on DIFFERENT bills stays separate,
