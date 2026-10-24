@@ -293,8 +293,9 @@ async function buildWorkbookBuffer(data, opts = {}) {
 
     head('COST OF GOODS (Food & Packaging)');
     const grp = (g) => (p) => r2((p.byGroup.find(x => x.group === g) || {}).amount || 0);
-    const c1 = writeRow('food', 'Food & raw material', grp('Food'));
-    const c2 = writeRow('pack', 'Containers & packaging', grp('Packaging'));
+    // when dated inventory bills exist for a month, they ARE the cost of goods (food/packaging payments are not added again)
+    const c1 = writeRow('food', 'Food, raw material & inventory purchases', (p) => (p.inventoryPurchases > 0 ? r2(p.cogs) : grp('Food')(p)));
+    const c2 = writeRow('pack', 'Containers & packaging', (p) => (p.inventoryPurchases > 0 ? 0 : grp('Packaging')(p)));
     const tC = writeRow('cogs', 'TOTAL COST OF GOODS', p => r2(p.cogs), { style: 'total', formula: (c) => `SUM(${c}${c1}:${c}${c2})` });
     const gP = writeRow('gross', 'GROSS PROFIT', p => r2(p.grossProfit), { style: 'total', formula: (c) => `${c}${tS}-${c}${tC}` });
 

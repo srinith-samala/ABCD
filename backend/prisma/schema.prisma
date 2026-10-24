@@ -65,6 +65,7 @@ model Transaction {
   product   Product  @relation(fields: [productId], references: [id])
   userId    Int?     // Who made the transaction
   createdAt DateTime @default(now())
+  note      String?   // e.g. "Lalanji's - Bill 6893" for lines imported from a supplier bill
 }
 
 model Expense {

@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { API } from '../config';
-import { fmtQty } from '../utils';
+import { fmtQty, guessDateFromName } from '../utils';
 import Portal from './Portal';
 
 const TEMPLATE_CSV =
@@ -43,6 +43,8 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
   });
   const [recordPurchase, setRecordPurchase] = useState(true);
   const [customTotal, setCustomTotal] = useState('');
+  const [allowDuplicate, setAllowDuplicate] = useState(false);
+  const [dateFromName, setDateFromName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [data, setData] = useState(null);
@@ -60,6 +62,10 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
     }
     if (f.size > 5 * 1024 * 1024) { setFile(null); setError('File is too large (max 5 MB)'); return; }
     setFile(f);
+    setAllowDuplicate(false);
+    const guessed = guessDateFromName(f.name);
+    setDateFromName(guessed);
+    if (guessed) setBillDate(guessed); // e.g. Bills_02_Oct_2026.xlsx -> 2 Oct 2026
   };
 
   const send = async (preview) => {
@@ -73,13 +79,14 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
       fd.append('recordPurchase', String(recordPurchase));
       fd.append('billDate', billDate);
       if (customTotal) fd.append('customTotal', customTotal);
+      if (allowDuplicate) fd.append('allowDuplicate', 'true');
       const res = await fetch(`${API}/api/stock/import`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }, // no Content-Type: browser sets the multipart boundary
         body: fd,
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(body.error || 'Import failed'); return; }
+      if (!res.ok) { setError(body.error || `Import failed (server answered ${res.status}). Please make sure the latest backend is deployed.`); return; }
       setData(body);
       setStep(preview ? 'preview' : 'done');
       if (!preview) onDone();
@@ -122,6 +129,7 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
               </label>
             </div>
 
+            {file && dateFromName && <p style={{ fontSize: 12, color: '#166534', background: '#F0FDF4', borderRadius: 8, padding: '6px 10px', marginBottom: 10 }}>📅 Date taken from the file name: <b>{dateFromName}</b> (change it above if it is wrong).</p>}
             <p style={{ fontSize: 12.5, color: '#64748B', marginBottom: 14 }}>
               Required column: <b>name</b>. Optional: quantity, price, unit, category, supplier, sku.
               <br />Existing items get this file's quantity added to stock. All items will be categorized under <b>{billDate}</b> in Daily Inventory.
@@ -187,6 +195,75 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
               </div>
             </div>
 
+            {(data.notes || []).map((n, i) => (
+              <p key={i} style={{ fontSize: 12, color: '#075985', background: '#E0F2FE', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>ℹ️ {n}</p>
+            ))}
+            {data.fileTotal !== null && data.fileTotal !== undefined && !data.totalMismatch && data.customTotal === null && (
+              <p style={{ fontSize: 12, color: '#166534', background: '#DCFCE7', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>✅ Matches the TOTAL line of your file ({inr(data.fileTotal)}).</p>
+            )}
+            {data.totalMismatch && (
+              <p style={{ fontSize: 12.5, color: '#991B1B', background: '#FEE2E2', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+                ⚠️ The TOTAL line in your file says <b>{inr(data.fileTotal)}</b> but the item lines add up to <b>{inr(data.estimatedBillCost)}</b>. Check the lines below, or type the correct bill total underneath.
+              </p>
+            )}
+            {data.customTotal !== null && data.customTotal !== undefined && (
+              <p style={{ fontSize: 12, color: '#92400E', background: '#FEF3C7', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+                Bill total set to <b>{inr(data.customTotal)}</b> (the file's lines added up to {inr(data.calculatedTotal)}; amounts were scaled to match).
+              </p>
+            )}
+            {(data.fileDates || []).length > 0 && (
+              <p style={{ fontSize: 12, color: '#075985', background: '#E0F2FE', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+                📅 This file has its own dates ({data.fileDates.slice(0, 6).join(', ')}{data.fileDates.length > 6 ? ' ...' : ''}). Lines are recorded on those dates.
+              </p>
+            )}
+            {(data.duplicateBills || []).length > 0 && (
+              <div style={{ background: '#FEE2E2', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+                <p style={{ fontSize: 12.5, color: '#991B1B' }}>⚠️ Already recorded on this date: <b>{data.duplicateBills.slice(0, 6).join(', ')}</b>. Importing them again doubles the stock and the cost.</p>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, fontSize: 12.5, cursor: 'pointer', color: '#7F1D1D' }}>
+                  <input type="checkbox" checked={allowDuplicate} onChange={e => setAllowDuplicate(e.target.checked)} /> Import anyway
+                </label>
+              </div>
+            )}
+            {(data.bills || []).length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Bills in this file:</p>
+                <div style={{ background: '#FAFBFC', borderRadius: 10, padding: '4px 12px', fontSize: 12 }}>
+                  {data.bills.map((b, i) => (
+                    <p key={i} style={{ padding: '6px 0', display: 'flex', justifyContent: 'space-between', gap: 8, borderBottom: i < data.bills.length - 1 ? '1px solid #F1F5F9' : 'none' }}>
+                      <span>🧾 {b.ref} <span style={{ color: '#8A94A6' }}>· {b.items} item{b.items === 1 ? '' : 's'}</span></span>
+                      <b style={{ whiteSpace: 'nowrap' }}>{inr(b.total)}</b>
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(data.lines || []).length > 0 && (
+              <details style={{ marginBottom: 12 }}>
+                <summary style={{ fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Check every line ({data.lines.length})</summary>
+                <div style={{ maxHeight: 220, overflowY: 'auto', background: '#FAFBFC', borderRadius: 10, padding: '6px 12px', fontSize: 12, marginTop: 6 }}>
+                  {data.lines.map((l, i) => (
+                    <p key={i} style={{ padding: '4px 0', display: 'flex', justifyContent: 'space-between', gap: 8, borderBottom: '1px solid #F1F5F9' }}>
+                      <span>{l.name}{l.isNew ? <span style={{ color: '#16A34A' }}> (new)</span> : null}</span>
+                      <span style={{ whiteSpace: 'nowrap', color: '#0F1B2D' }}>{fmtQty(l.quantity)} {l.unit} x {inr(l.rate)} = <b>{inr(l.total)}</b></span>
+                    </p>
+                  ))}
+                </div>
+              </details>
+            )}
+            {(data.checks || []).length > 0 && (
+              <details style={{ marginBottom: 12 }}>
+                <summary style={{ fontSize: 12, fontWeight: 700, cursor: 'pointer', color: '#92400E' }}>{data.checks.length} line(s) where price x quantity differs from Total Price</summary>
+                <div style={{ background: '#FFFBEB', borderRadius: 10, padding: '6px 12px', fontSize: 12, marginTop: 6 }}>
+                  {data.checks.map((c, i) => <p key={i} style={{ padding: '3px 0' }}><b>{c.name}</b>: {c.message}</p>)}
+                </div>
+              </details>
+            )}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+              <label style={{ fontSize: 12, color: '#64748B' }}>Bill total is different? Type it:</label>
+              <input type="number" min="0" step="0.01" value={customTotal} onChange={e => setCustomTotal(e.target.value)} placeholder="optional" style={{ width: 120, padding: '6px 10px', borderRadius: 8, border: '1.5px solid #CBD5E1', fontSize: 13 }} />
+              <button onClick={() => send(true)} disabled={busy} style={{ ...btn(false, busy), padding: '6px 12px', fontSize: 12 }}>Recalculate</button>
+            </div>
+
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
               {pill('#D6F5E3', '#16A34A', `New items: ${data.toCreateCount}`)}
               {pill('#EEF0FF', '#6C63FF', `Stock added to existing: ${data.addUpCount}`)}
@@ -247,7 +324,7 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
             {error && <p style={{ background: '#FEE2E2', color: '#B91C1C', fontSize: 13, padding: '10px 12px', borderRadius: 10, marginBottom: 14 }}>{error}</p>}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button onClick={() => { setStep('pick'); setData(null); }} style={btn(false)}>Back</button>
-              <button onClick={() => send(false)} disabled={busy || nothingToDo} style={btn(true, busy || nothingToDo)}>
+              <button onClick={() => send(false)} disabled={busy || nothingToDo || (recordPurchase && (data.duplicateBills || []).length > 0 && !allowDuplicate)} style={btn(true, busy || nothingToDo || (recordPurchase && (data.duplicateBills || []).length > 0 && !allowDuplicate))}>
                 {busy ? 'Saving...' : `Confirm & Log Inventory for ${billDate}`}
               </button>
             </div>

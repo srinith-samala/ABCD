@@ -178,6 +178,15 @@ export default function Inventory() {
     return list;
   }, [transactions, dateFilter, search]);
 
+  // each day is a dropdown: click to open / close, any number of days can be open at the same time
+  const [openDays, setOpenDays] = useState(() => new Set());
+  const [openInit, setOpenInit] = useState(false);
+  useEffect(() => {
+    if (!openInit && dailyGroups.length) { setOpenDays(new Set([dailyGroups[0].date])); setOpenInit(true); }
+  }, [dailyGroups, openInit]);
+  const toggleDay = (d) => setOpenDays(prev => { const n = new Set(prev); if (n.has(d)) n.delete(d); else n.add(d); return n; });
+  const forceOpen = !!(search.trim() || dateFilter); // while searching / filtering by date, matching days stay open
+
   const inStock = products.filter(p => getStatus(p.quantity, p.reorderLevel) === 'In Stock').length;
   const lowStock = products.filter(p => getStatus(p.quantity, p.reorderLevel) === 'Low Stock').length;
   const outOfStock = products.filter(p => getStatus(p.quantity, p.reorderLevel) === 'Out of Stock').length;
@@ -265,18 +274,46 @@ export default function Inventory() {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              {dailyGroups.map(group => (
+              {dailyGroups.length > 1 && (
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginBottom: -6 }}>
+                  <button onClick={() => setOpenDays(new Set(dailyGroups.map(g => g.date)))} style={{ padding: '6px 12px', borderRadius: 8, background: '#F4F5F7', border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Open all days</button>
+                  <button onClick={() => setOpenDays(new Set())} style={{ padding: '6px 12px', borderRadius: 8, background: '#F4F5F7', border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Close all</button>
+                </div>
+              )}
+              {dailyGroups.map(group => {
+                const open = forceOpen || openDays.has(group.date);
+                // lines of this day grouped by supplier bill
+                const bills = [];
+                const byRef = new Map();
+                group.items.forEach(it => {
+                  const ref = it.note || 'Other entries';
+                  if (!byRef.has(ref)) { const g = { ref, rows: [], total: 0, units: 0 }; byRef.set(ref, g); bills.push(g); }
+                  const g = byRef.get(ref);
+                  g.rows.push(it); g.total += Number(it.total || 0); g.units += Number(it.quantity || 0);
+                });
+                const billCount = bills.filter(b => b.ref !== 'Other entries').length;
+                return (
                 <div key={group.date} className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                  {/* Daily Bill Header Banner */}
-                  <div style={{
-                    padding: '14px 20px', background: '#FAFBFC', borderBottom: '1.5px solid #E8EAED',
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12
-                  }}>
+                  {/* Day header - click to open / close */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={open}
+                    onClick={() => toggleDay(group.date)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDay(group.date); } }}
+                    style={{
+                      padding: '14px 20px', background: open ? '#F0F7F3' : '#FAFBFC', borderBottom: open ? '1.5px solid #E8EAED' : 'none', cursor: 'pointer', userSelect: 'none',
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12
+                    }}
+                  >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <span style={{ fontSize: 14, color: '#6C63FF', width: 18, display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▶</span>
                       <span style={{ fontSize: 18 }}>📅</span>
                       <div>
                         <h3 style={{ fontSize: 15, fontWeight: 800, color: '#0F1B2D' }}>{fmtDay(group.date)}</h3>
-                        <p style={{ fontSize: 12, color: '#8A94A6', marginTop: 2 }}>{group.items.length} product(s) received</p>
+                        <p style={{ fontSize: 12, color: '#8A94A6', marginTop: 2 }}>
+                          {group.items.length} item{group.items.length === 1 ? '' : 's'}{billCount > 0 ? ` · ${billCount} bill${billCount === 1 ? '' : 's'}` : ''} · click to {open ? 'close' : 'open'}
+                        </p>
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -289,49 +326,67 @@ export default function Inventory() {
                     </div>
                   </div>
 
-                  {/* Daily Items Table */}
-                  <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
-                      <thead>
-                        <tr style={{ background: '#fff', borderBottom: '1px solid #E8EAED', color: '#8A94A6', fontSize: 11, textTransform: 'uppercase' }}>
-                          <th style={{ padding: '10px 18px' }}>Product</th>
-                          <th style={{ padding: '10px 18px', textAlign: 'right' }}>Quantity</th>
-                          <th style={{ padding: '10px 18px', textAlign: 'right' }}>Unit Price</th>
-                          <th style={{ padding: '10px 18px', textAlign: 'right', fontWeight: 700, color: '#0F1B2D' }}>Total Amount from Bill</th>
-                          <th style={{ padding: '10px 18px', textAlign: 'center' }}>Time</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {group.items.map((row) => (
-                          <tr key={row.id} style={{ borderBottom: '1px solid #F4F5F7' }}>
-                            <td style={{ padding: '12px 18px', fontWeight: 600 }}>
-                              <span style={{ marginRight: 6 }}>{row.product?.emoji || '📦'}</span>
-                              {row.product?.name || 'Unknown'}
-                              {row.product?.category && (
-                                <span style={{ marginLeft: 8, fontSize: 11, color: '#8A94A6', background: '#F4F5F7', padding: '2px 8px', borderRadius: 6 }}>
-                                  {row.product.category.name || row.product.category}
-                                </span>
-                              )}
-                            </td>
-                            <td style={{ padding: '12px 18px', textAlign: 'right', fontWeight: 700, color: '#2ECC71' }}>
-                              +{fmtQty(row.quantity)} <span style={{ fontSize: 12, fontWeight: 500, color: '#8A94A6' }}>{row.product?.unit || 'pcs'}</span>
-                            </td>
-                            <td style={{ padding: '12px 18px', textAlign: 'right', color: '#8A94A6' }}>
-                              ₹{row.product?.price || 0}
-                            </td>
-                            <td style={{ padding: '12px 18px', textAlign: 'right', fontWeight: 800, color: '#0F1B2D' }}>
-                              {inr(row.total)}
-                            </td>
-                            <td style={{ padding: '12px 18px', textAlign: 'center', color: '#8A94A6', fontSize: 12 }}>
-                              {new Date(row.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </td>
+                  {open && (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
+                        <thead>
+                          <tr style={{ background: '#fff', borderBottom: '1px solid #E8EAED', color: '#8A94A6', fontSize: 11, textTransform: 'uppercase' }}>
+                            <th style={{ padding: '10px 18px' }}>Product</th>
+                            <th style={{ padding: '10px 18px', textAlign: 'right' }}>Quantity</th>
+                            <th style={{ padding: '10px 18px', textAlign: 'right' }}>Rate</th>
+                            <th style={{ padding: '10px 18px', textAlign: 'right', fontWeight: 700, color: '#0F1B2D' }}>Amount</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody>
+                          {bills.map(b => (
+                            <React.Fragment key={b.ref}>
+                              {(bills.length > 1 || b.ref !== 'Other entries') && (
+                                <tr style={{ background: '#F8FAFC' }}>
+                                  <td colSpan={3} style={{ padding: '9px 18px', fontWeight: 700, color: '#334155', borderTop: '1px solid #E8EAED' }}>
+                                    🧾 {b.ref} <span style={{ fontWeight: 500, color: '#8A94A6', marginLeft: 8 }}>{b.rows.length} item{b.rows.length === 1 ? '' : 's'}</span>
+                                  </td>
+                                  <td style={{ padding: '9px 18px', textAlign: 'right', fontWeight: 800, color: '#0F1B2D', borderTop: '1px solid #E8EAED' }}>{inr(b.total)}</td>
+                                </tr>
+                              )}
+                              {b.rows.map(row => (
+                                <tr key={row.id} style={{ borderBottom: '1px solid #F4F5F7' }}>
+                                  <td style={{ padding: '11px 18px 11px 30px', fontWeight: 600 }}>
+                                    <span style={{ marginRight: 6 }}>{row.product?.emoji || '📦'}</span>
+                                    {row.product?.name || 'Unknown'}
+                                    {row.product?.category && (
+                                      <span style={{ marginLeft: 8, fontSize: 11, color: '#8A94A6', background: '#F4F5F7', padding: '2px 8px', borderRadius: 6 }}>
+                                        {row.product.category.name || row.product.category}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td style={{ padding: '11px 18px', textAlign: 'right', fontWeight: 700, color: '#2ECC71' }}>
+                                    +{fmtQty(row.quantity)} <span style={{ fontSize: 12, fontWeight: 500, color: '#8A94A6' }}>{row.product?.unit || 'pcs'}</span>
+                                  </td>
+                                  <td style={{ padding: '11px 18px', textAlign: 'right', color: '#8A94A6' }}>
+                                    {row.quantity > 0 ? `₹${(Number(row.total || 0) / Number(row.quantity)).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '-'}
+                                  </td>
+                                  <td style={{ padding: '11px 18px', textAlign: 'right', fontWeight: 800, color: '#0F1B2D' }}>
+                                    {inr(row.total)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr style={{ borderTop: '2px solid #0F1B2D', background: '#FAFBFC' }}>
+                            <td style={{ padding: '12px 18px', fontWeight: 800 }}>Day total</td>
+                            <td style={{ padding: '12px 18px', textAlign: 'right', fontWeight: 700 }}>{fmtQty(group.totalUnits)}</td>
+                            <td></td>
+                            <td style={{ padding: '12px 18px', textAlign: 'right', fontWeight: 800, color: '#16A34A' }}>{inr(group.totalAmount)}</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
 
               {dailyGroups.length === 0 && (
                 <div className="card" style={{ textAlign: 'center', padding: '48px 24px', color: '#8A94A6' }}>

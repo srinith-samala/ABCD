@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
-const { parseProductsFile, planImport, mergeDuplicateRows } = require('./importParser');
+const { parseProductsFile, planImport, mergeDuplicateRows, mergeByProduct } = require('./importParser');
 const { parseOrdersFile } = require('./purchaseParser');
 const Acc = require('./accounting');
 const repair = require('./repair');
@@ -293,31 +293,85 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
     const billDateStr = req.body.billDate || req.body.date;
     const billDate = parseSafeDate(billDateStr);
 
-    const { rows, mergedCount } = mergeDuplicateRows(parsed.rows);
+    const { rows: lineRows, mergedCount } = mergeDuplicateRows(parsed.rows); // one row per bill line
+    const rows = mergeByProduct(lineRows);                                    // one row per product (stock is added per product)
     const existing = await prisma.product.findMany({ select: { id: true, name: true, sku: true, quantity: true, price: true, unit: true, costPrice: true } });
     const { toCreate, addUps, skipped } = planImport(rows, existing);
+    const existingByName = new Map(existing.map(p => [String(p.name).trim().toLowerCase(), p]));
 
-    const totalUnitsToAdd = round3(
-      addUps.reduce((sum, a) => sum + (Number(a.add) || 0), 0) +
-      toCreate.reduce((sum, c) => sum + (Number(c.quantity) || 0), 0)
-    );
-    const estimatedBillCost = round2(
-      addUps.reduce((sum, a) => sum + (Number(a.add) * (Number(a.rate) > 0 ? Number(a.rate) : (Number(a.product.costPrice) || Number(a.product.price) || 0))), 0) +
-      toCreate.reduce((sum, c) => sum + (Number(c.quantity) * (Number(c.costPrice) || Number(c.price) || 0)), 0)
-    );
+    // The amount of a bill line: the file's own "Total Price" when it has one (it already includes GST/discounts),
+    // otherwise quantity x unit price. Never multiplied twice.
+    const costOf = (l) => {
+      if (l.hasTotal || Number(l.price) > 0) return round2(l.lineTotal);
+      const p = existingByName.get(l.name.toLowerCase());
+      return round2(l.quantity * ((p && (Number(p.costPrice) || Number(p.price))) || 0));
+    };
+    const billLines = lineRows.filter(l => l.quantity > 0);
+    const dayOf = (l) => (l.date ? parseSafeDate(l.date) : billDate);
+    const istDayStr = (d) => new Date(new Date(d).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+
+    // a typed "bill total" wins: the lines are scaled so they add up to exactly that amount
+    const amounts = new Map(billLines.map(l => [l, costOf(l)]));
+    const calcTotal = round2([...amounts.values()].reduce((t, v) => t + v, 0));
+    const customRaw = req.body.customTotal;
+    const custom = customRaw !== undefined && customRaw !== '' && Number.isFinite(parseFloat(customRaw)) && parseFloat(customRaw) >= 0 ? round2(parseFloat(customRaw)) : null;
+    if (custom !== null && billLines.length) {
+      let left = custom;
+      billLines.forEach((l, i) => {
+        const share = calcTotal > 0 ? amounts.get(l) / calcTotal : 1 / billLines.length;
+        const v = i === billLines.length - 1 ? round2(left) : round2(custom * share);
+        amounts.set(l, v); left = round2(left - v);
+      });
+    }
+    const amountOf = (l) => amounts.get(l);
+
+    const totalUnitsToAdd = round3(billLines.reduce((t, l) => t + l.quantity, 0));
+    const estimatedBillCost = round2([...amounts.values()].reduce((t, v) => t + v, 0));
+
+    // bills already imported on the same day (same bill reference) -> uploading again would double stock and cost
+    const refs = [...new Set(billLines.map(l => l.billRef).filter(Boolean))];
+    let duplicateBills = [];
+    if (refs.length) {
+      const prior = await prisma.transaction.findMany({ where: { type: 'PURCHASE', note: { in: refs } }, select: { note: true, createdAt: true } });
+      const seen = new Set(prior.map(t => `${t.note}|${istDayStr(t.createdAt)}`));
+      duplicateBills = refs.filter(ref => billLines.some(l => l.billRef === ref && seen.has(`${ref}|${istDayStr(dayOf(l))}`)));
+    }
+
+    const byBill = new Map();
+    billLines.forEach(l => {
+      const k = l.billRef || 'No bill reference';
+      const g = byBill.get(k) || { ref: k, supplier: l.supplier || '', items: 0, units: 0, total: 0 };
+      g.items++; g.units = round3(g.units + l.quantity); g.total = round2(g.total + amountOf(l));
+      byBill.set(k, g);
+    });
+    const fileDates = [...new Set(billLines.map(l => l.date).filter(Boolean))].sort();
 
     const base = {
       billDate: billDateStr || billDate.toISOString().slice(0, 10),
       totalUnitsToAdd,
       estimatedBillCost,
+      fileTotal: parsed.fileTotal,
+      calculatedTotal: calcTotal,
+      customTotal: custom,
+      totalMismatch: custom === null && parsed.fileTotal !== null && Math.abs(parsed.fileTotal - estimatedBillCost) > 1,
+      notes: parsed.notes,
+      checks: (parsed.checks || []).slice(0, 40),
+      duplicateBills,
+      fileDates,
+      bills: [...byBill.values()],
+      lines: billLines.slice(0, 400).map(l => ({
+        row: l.rowNumber, name: l.name, quantity: l.quantity, unit: l.unit, total: amountOf(l),
+        rate: l.quantity > 0 ? round2(amountOf(l) / l.quantity) : 0, billRef: l.billRef, date: l.date,
+        isNew: !existingByName.has(l.name.toLowerCase()),
+      })),
       toCreateCount: toCreate.length,
       newNames: toCreate.slice(0, 50).map(r => r.name),
       addUpCount: addUps.length,
       addUps: addUps.slice(0, 60).map(a => ({
         row: a.row, name: a.product.name, add: a.add, unit: a.product.unit,
         before: a.product.quantity, after: round3(a.product.quantity + a.add),
-        rate: a.rate > 0 ? a.rate : (a.product.costPrice || a.product.price || 0),
-        totalCost: round2(a.add * (a.rate > 0 ? a.rate : (a.product.costPrice || a.product.price || 0))),
+        rate: a.add > 0 && a.lineTotal ? round2(a.lineTotal / a.add) : (a.rate > 0 ? a.rate : (a.product.costPrice || a.product.price || 0)),
+        totalCost: a.lineTotal ? round2(a.lineTotal) : round2(a.add * (a.rate > 0 ? a.rate : (a.product.costPrice || a.product.price || 0))),
       })),
       skippedCount: skipped.length,
       skipped: skipped.slice(0, 50),
@@ -328,6 +382,10 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
     };
     if (preview) return res.json({ preview: true, ...base });
 
+    if (duplicateBills.length && recordPurchase && String(req.body.allowDuplicate) !== 'true') {
+      return res.status(409).json({ code: 'DUPLICATE_BILLS', duplicateBills, error: `These bills are already recorded for this date: ${duplicateBills.slice(0, 5).join(', ')}. Importing them again would double the stock and cost.` });
+    }
+
     // suppliers + their phone numbers are handled for every row
     const sup = await syncSuppliers(rows.filter(r => r.supplier).map(r => ({ name: r.supplier, phone: r.supplierPhone })));
 
@@ -337,6 +395,7 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
     let recordedUnits = 0;
     if (toCreate.length > 0 || addUps.length > 0) {
       await prisma.$transaction(async (tx) => {
+        const idByName = new Map(); // product name (lower case) -> product id
         if (toCreate.length > 0) {
           const wanted = [...new Set(toCreate.map(r => r.category).filter(Boolean))];
           let cats = await tx.category.findMany();
@@ -370,22 +429,8 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
                 supplierId: r.supplier ? sup.idByLower.get(r.supplier.toLowerCase()) ?? null : null,
               }
             });
+            idByName.set(r.name.toLowerCase(), p.id);
             created++;
-            if (recordPurchase && r.quantity > 0) {
-              const itemTotal = round2(r.quantity * (r.costPrice || r.price || 0));
-              await tx.transaction.create({
-                data: {
-                  productId: p.id,
-                  type: 'PURCHASE',
-                  quantity: r.quantity,
-                  total: itemTotal,
-                  userId: req.user.id,
-                  createdAt: billDate,
-                }
-              });
-              recordedTotal = round2(recordedTotal + itemTotal);
-              recordedUnits = round3(recordedUnits + r.quantity);
-            }
           }
         }
 
@@ -393,16 +438,22 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
           const cur = await tx.product.findUnique({ where: { id: a.product.id } });
           if (!cur) continue;
           await tx.product.update({ where: { id: cur.id }, data: { quantity: round3(cur.quantity + a.add) } });
-          if (recordPurchase) {
-            const rate = a.rate > 0 ? a.rate : (cur.costPrice || cur.price || 0);
-            const total = round2(a.add * rate);
+          idByName.set(String(a.product.name).trim().toLowerCase(), cur.id);
+          added++;
+        }
+
+        // one dated PURCHASE per bill line, so every bill keeps its own lines, supplier reference and amount
+        if (recordPurchase) {
+          for (const l of billLines) {
+            const pid = idByName.get(l.name.toLowerCase());
+            if (!pid) continue;
+            const total = amountOf(l);
             await tx.transaction.create({
-              data: { productId: cur.id, type: 'PURCHASE', quantity: a.add, total, userId: req.user.id, createdAt: billDate },
+              data: { productId: pid, type: 'PURCHASE', quantity: l.quantity, total, userId: req.user.id, createdAt: dayOf(l), note: l.billRef || null },
             });
             recordedTotal = round2(recordedTotal + total);
-            recordedUnits = round3(recordedUnits + a.add);
+            recordedUnits = round3(recordedUnits + l.quantity);
           }
-          added++;
         }
       }, { timeout: 120000, maxWait: 20000 });
 
@@ -433,47 +484,54 @@ app.post('/api/stock/create-daily-bill', authenticateToken, isAdmin, async (req,
   try {
     const { date, customTotal } = req.body;
     const targetDate = parseSafeDate(date);
-    
+    const dayStr = (d) => new Date(new Date(d).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+
     // Fetch all current products that have stock > 0
     const products = await prisma.product.findMany({ where: { quantity: { gt: 0 } } });
     if (!products.length) {
       return res.status(400).json({ error: 'No items in stock to record as an inventory bill' });
     }
 
-    let recordedTotal = 0;
+    // one stock snapshot per day - pressing the button twice would double the inventory cost
+    const prior = await prisma.transaction.findMany({ where: { type: 'PURCHASE', note: 'Stock snapshot' }, select: { createdAt: true } });
+    if (prior.some(t => dayStr(t.createdAt) === dayStr(targetDate))) {
+      return res.status(409).json({ error: `Current stock was already recorded as a bill for ${dayStr(targetDate)}. Delete those entries first if you want to record it again.` });
+    }
+
+    const lines = products.map(p => {
+      const qty = Number(p.quantity);
+      const rate = Number(p.costPrice || p.price || 0);
+      return { p, qty, total: round2(qty * rate) };
+    }).filter(l => l.qty > 0);
+    const computed = round2(lines.reduce((t, l) => t + l.total, 0));
+
+    // a typed bill total is respected: the lines are scaled so that they add up to exactly that amount
+    const custom = customTotal !== undefined && customTotal !== '' && !isNaN(parseFloat(customTotal)) && parseFloat(customTotal) >= 0 ? round2(parseFloat(customTotal)) : null;
+    if (custom !== null) {
+      let left = custom;
+      lines.forEach((l, i) => {
+        const share = computed > 0 ? l.total / computed : 1 / lines.length;
+        l.total = i === lines.length - 1 ? round2(left) : round2(custom * share);
+        left = round2(left - l.total);
+      });
+    }
+
     let recordedUnits = 0;
-
     await prisma.$transaction(async (tx) => {
-      for (const p of products) {
-        const qty = Number(p.quantity);
-        if (qty <= 0) continue;
-        const rate = Number(p.costPrice || p.price || 0);
-        const itemTotal = round2(qty * rate);
+      for (const l of lines) {
         await tx.transaction.create({
-          data: {
-            productId: p.id,
-            type: 'PURCHASE',
-            quantity: qty,
-            total: itemTotal,
-            userId: req.user.id,
-            createdAt: targetDate,
-          }
+          data: { productId: l.p.id, type: 'PURCHASE', quantity: l.qty, total: l.total, userId: req.user.id, createdAt: targetDate, note: 'Stock snapshot' },
         });
-        recordedTotal = round2(recordedTotal + itemTotal);
-        recordedUnits = round3(recordedUnits + qty);
+        recordedUnits = round3(recordedUnits + l.qty);
       }
-    });
-
-    const finalTotal = customTotal !== undefined && customTotal !== '' && !isNaN(parseFloat(customTotal))
-      ? parseFloat(customTotal)
-      : recordedTotal;
+    }, { timeout: 120000, maxWait: 20000 });
 
     res.json({
       success: true,
       date: targetDate.toISOString().slice(0, 10),
-      itemsCount: products.length,
+      itemsCount: lines.length,
       totalUnits: recordedUnits,
-      totalCost: finalTotal,
+      totalCost: custom !== null ? custom : computed,
     });
   } catch (err) {
     console.error('Failed to create daily bill:', err);
@@ -1120,7 +1178,7 @@ app.get('/api/accounts/pnl', authenticateToken, isAdmin, async (req, res) => {
 });
 
 // --- DAILY LEDGER & ACCUMULATED PROFIT ---
-app.get('/api/accounts/daily-ledger', authenticateToken, async (req, res) => {
+app.get('/api/accounts/daily-ledger', authenticateToken, isAdmin, async (req, res) => {
   try {
     const data = await loadAccounting();
     const month = pickMonth(data, req.query.month);

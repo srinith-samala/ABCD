@@ -133,7 +133,10 @@ function computePnL(data, month) {
     byDayMap.set(k, r);
   });
 
-  const saleTx = transactions.filter(t => t.type === 'SALE' && inMonth(t.createdAt));
+  // Stock Out orders only stand in for sales when no daily sales were recorded for the period.
+  // Otherwise they would be counted on top of the POS sales (double counting).
+  const hasDailySales = dailySales.some(s => inMonth(s.date));
+  const saleTx = hasDailySales ? [] : transactions.filter(t => t.type === 'SALE' && inMonth(t.createdAt));
   saleTx.forEach(t => {
     const k = dayKey(t.createdAt);
     if (!k) return;
