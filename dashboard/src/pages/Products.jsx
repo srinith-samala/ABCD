@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { API } from '../config';
 import Header from '../components/Header';
 import ProductCard from '../components/ProductCard';
@@ -7,19 +8,36 @@ import ImportProductsModal from '../components/ImportProductsModal';
 import ProductFormModal from '../components/ProductFormModal';
 
 export default function Products() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlCategory = searchParams.get('category') || '';
+
   const [search, setSearch] = useState('');
+  const [catFilter, setCatFilter] = useState(urlCategory || 'All');
   const [sort, setSort] = useState('name');
   const [selected, setSelected] = useState(null);
   const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState(['All']);
   const [showImport, setShowImport] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
+  useEffect(() => {
+    if (urlCategory) {
+      setCatFilter(urlCategory);
+    }
+  }, [urlCategory]);
+
   const fetchProducts = async () => {
     try {
-      const res = await fetch(`${API}/api/stock`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-      });
-      if (res.ok) setProducts(await res.json());
+      const headers = { 'Authorization': `Bearer ${localStorage.getItem('token')}` };
+      const [resProd, resCat] = await Promise.all([
+        fetch(`${API}/api/stock`, { headers }),
+        fetch(`${API}/api/categories`, { headers })
+      ]);
+      if (resProd.ok) setProducts(await resProd.json());
+      if (resCat.ok) {
+        const cats = await resCat.json();
+        setCategories(['All', ...cats.map(c => c.name)]);
+      }
     } catch (err) {
       console.error(err);
     }
@@ -29,17 +47,66 @@ export default function Products() {
     fetchProducts();
   }, []);
 
+  const handleCategoryChange = (val) => {
+    setCatFilter(val);
+    if (val === 'All') {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('category');
+      setSearchParams(nextParams);
+    } else {
+      setSearchParams({ category: val });
+    }
+  };
+
   const filtered = products
-    .filter(p => p.name.toLowerCase().includes(search.toLowerCase()))
+    .filter(p => {
+      const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) || (p.sku && p.sku.toLowerCase().includes(search.toLowerCase()));
+      const matchCat = catFilter === 'All' || p.category?.name === catFilter || p.category === catFilter;
+      return matchSearch && matchCat;
+    })
     .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name) : sort === 'stock' ? b.quantity - a.quantity : b.price - a.price);
 
   return (
     <div className="page-fade" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <Header title="Products" subtitle="Browse and manage your product catalog" />
       <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
-        <div style={{ display: 'flex', gap: 12, marginBottom: 24 }}>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products..." style={{ flex: 1, padding: '9px 14px', borderRadius: 10, border: '1.5px solid #E8EAED', fontSize: 13, fontFamily: 'DM Sans', outline: 'none' }} />
-          <select value={sort} onChange={e => setSort(e.target.value)} style={{ padding: '9px 14px', borderRadius: 10, border: '1.5px solid #E8EAED', fontSize: 13, fontFamily: 'DM Sans', outline: 'none' }}>
+        
+        {/* Active Category Filter Banner */}
+        {catFilter !== 'All' && (
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 10,
+            background: '#EEF0FF', color: '#6C63FF', padding: '6px 14px',
+            borderRadius: 20, fontSize: 13, fontWeight: 700, marginBottom: 16
+          }}>
+            <span>Category: <b>{catFilter}</b> ({filtered.length} products)</span>
+            <button
+              onClick={() => handleCategoryChange('All')}
+              style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#6C63FF', fontWeight: 800, fontSize: 13 }}
+            >
+              ✕ Clear Filter
+            </button>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search products..."
+            style={{ flex: 1, minWidth: 200, padding: '9px 14px', borderRadius: 10, border: '1.5px solid #E8EAED', fontSize: 13, fontFamily: 'DM Sans', outline: 'none' }}
+          />
+          <select
+            value={catFilter}
+            onChange={e => handleCategoryChange(e.target.value)}
+            style={{ padding: '9px 14px', borderRadius: 10, border: '1.5px solid #E8EAED', fontSize: 13, fontFamily: 'DM Sans', outline: 'none' }}
+          >
+            {categories.map(c => <option key={c} value={c}>{c === 'All' ? 'All Categories' : c}</option>)}
+          </select>
+          <select
+            value={sort}
+            onChange={e => setSort(e.target.value)}
+            style={{ padding: '9px 14px', borderRadius: 10, border: '1.5px solid #E8EAED', fontSize: 13, fontFamily: 'DM Sans', outline: 'none' }}
+          >
             <option value="name">Sort: Name</option>
             <option value="stock">Sort: Stock ↓</option>
             <option value="price">Sort: Price ↓</option>
@@ -50,7 +117,9 @@ export default function Products() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 18 }}>
           {filtered.map(p => <ProductCard key={p.id} p={p} onClick={() => setSelected(p)} />)}
           {filtered.length === 0 && (
-            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: '#8A94A6' }}>No products found. Click Add Product, or Import a CSV / Excel file.</div>
+            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: '#8A94A6' }}>
+              No products found in category "{catFilter}". Click Add Product, or Import a CSV / Excel file.
+            </div>
           )}
         </div>
       </div>

@@ -3,6 +3,7 @@ import { API } from '../config';
 import Header from '../components/Header';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { fmtQty } from '../utils';
+import { getRelevantEmoji } from '../emojiMap';
 import MonthPicker from '../components/MonthPicker';
 import { downloadStatistics } from '../components/downloadExport';
 
@@ -271,7 +272,7 @@ export default function Dashboard() {
               {lowStock.length === 0 && <EmptyState text={products.length === 0 ? 'No products added yet.' : 'All products are well stocked.'} />}
               {lowStock.map(p => (
                 <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 0', borderTop: '1px solid #E8EAED', fontSize: 13 }}>
-                  <span style={{ fontWeight: 500 }}>{p.emoji || '📦'} {p.name}</span>
+                  <span style={{ fontWeight: 500 }}>{getRelevantEmoji(p.name, p.category, p.emoji)} {p.name}</span>
                   <span style={{ fontWeight: 700, color: p.quantity === 0 ? '#EF4444' : '#F59E0B' }}>{fmtQty(p.quantity)} {p.unit || ''}</span>
                 </div>
               ))}

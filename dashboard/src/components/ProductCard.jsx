@@ -1,6 +1,7 @@
 import React from 'react';
 import { getStatus, statusColors } from './ProductDrawer';
 import { fmtQty } from '../utils';
+import { getRelevantEmoji } from '../emojiMap';
 
 const PALETTE = ['#3B82F6', '#16A34A', '#EF4444', '#6C63FF', '#F59E0B', '#14B8A6', '#EC4899'];
 
@@ -12,7 +13,7 @@ export default function ProductCard({ p, onClick }) {
         <div onClick={onClick} style={{ background: '#fff', borderRadius: 16, boxShadow: '0 2px 16px rgba(0,0,0,0.06)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.15s, box-shadow 0.15s', borderTop: `3px solid ${catColor}`, position: 'relative' }}
           onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-3px)'; e.currentTarget.style.boxShadow = '0 8px 28px rgba(0,0,0,0.12)'; e.currentTarget.querySelector('.hbtn').style.transform = 'translateY(0)'; e.currentTarget.querySelector('.hbtn').style.opacity = '1'; }}
           onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 2px 16px rgba(0,0,0,0.06)'; e.currentTarget.querySelector('.hbtn').style.transform = 'translateY(100%)'; e.currentTarget.querySelector('.hbtn').style.opacity = '0'; }}>
-          <div style={{ textAlign: 'center', paddingTop: 24, paddingBottom: 10, fontSize: 36 }}>{p.emoji || '📦'}</div>
+          <div style={{ textAlign: 'center', paddingTop: 24, paddingBottom: 10, fontSize: 36 }}>{getRelevantEmoji(p.name, p.category, p.emoji)}</div>
           <div style={{ padding: '0 16px 16px' }}>
             <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 6, lineHeight: 1.3 }}>{p.name}</h3>
             <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: catColor + '22', color: catColor }}>{p.category?.name || p.category || 'N/A'}</span>

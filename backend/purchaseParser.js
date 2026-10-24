@@ -1,5 +1,6 @@
 // Parses an uploaded CSV / XLSX of purchases (stock in) or sales (stock out) into validated rows.
 const { loadSheet, cellText, mapHeaders, toNumber } = require('./importParser');
+const { getRelevantEmoji } = require('./emojiMap');
 
 const MAX_ROWS = 500;
 
@@ -89,7 +90,7 @@ async function parseOrdersFile(buffer, filename) {
       category: get('category').slice(0, 60) || null,
       supplier: get('supplier').slice(0, 80) || null,
       supplierPhone: get('supplierPhone').slice(0, 80) || null,
-      emoji: get('emoji').slice(0, 8) || '📦',
+      emoji: getRelevantEmoji(product, get('category'), get('emoji').slice(0, 8)),
     });
   }
   return { rows, errors, ignoredSheets };

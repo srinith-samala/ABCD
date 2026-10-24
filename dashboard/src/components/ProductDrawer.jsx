@@ -3,6 +3,7 @@ import { LineChart, Line, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { API } from '../config';
 import ProductFormModal from './ProductFormModal';
 import { fmtQty } from '../utils';
+import { getRelevantEmoji } from '../emojiMap';
 import Portal from './Portal';
 
 export function getStatus(stock, reorder) {
@@ -71,7 +72,7 @@ export default function ProductDrawer({ product, onClose, fetchProducts }) {
         <div style={{ width: 420, maxWidth: '100vw', height: '100vh', background: '#fff', overflowY: 'auto', boxShadow: '-4px 0 24px rgba(0,0,0,0.12)', padding: 32, animation: 'fadeIn 0.2s ease' }} onClick={e => e.stopPropagation()}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
             <div>
-              <span style={{ fontSize: 40 }}>{product.emoji || '📦'}</span>
+              <span style={{ fontSize: 40 }}>{getRelevantEmoji(product.name, product.category, product.emoji)}</span>
               <h2 style={{ fontSize: 20, fontWeight: 700, marginTop: 8 }}>{product.name}</h2>
               <p style={{ color: '#8A94A6', fontSize: 13 }}>{product.sku}</p>
             </div>

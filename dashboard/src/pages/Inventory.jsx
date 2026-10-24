@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { API } from '../config';
 import Header from '../components/Header';
 import ProductCard from '../components/ProductCard';
@@ -6,6 +7,7 @@ import ProductDrawer, { getStatus } from '../components/ProductDrawer';
 import ImportProductsModal from '../components/ImportProductsModal';
 import ProductFormModal from '../components/ProductFormModal';
 import { fmtQty } from '../utils';
+import { getRelevantEmoji } from '../emojiMap';
 import Portal from '../components/Portal';
 
 const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
@@ -24,10 +26,13 @@ const fmtDay = (d) => {
 };
 
 export default function Inventory() {
-  const [tab, setTab] = useState('All Items'); // 'All Items' | 'Daily Inventory' | 'Low Stock' | 'Receiving Log'
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlCategory = searchParams.get('category') || '';
+
+  const [tab, setTab] = useState(urlCategory ? 'All Items' : 'All Items'); // 'All Items' | '📅 Daily Inventory' | 'Low Stock' | 'Receiving Log'
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('name');
-  const [catFilter, setCatFilter] = useState('All');
+  const [catFilter, setCatFilter] = useState(urlCategory || 'All');
   const [dateFilter, setDateFilter] = useState('');
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState(['All']);
@@ -35,6 +40,25 @@ export default function Inventory() {
   const [selected, setSelected] = useState(null);
   const [showImport, setShowImport] = useState(false);
   const [showForm, setShowForm] = useState(false);
+
+  // Sync category from URL parameter (e.g. from Categories page click)
+  useEffect(() => {
+    if (urlCategory) {
+      setCatFilter(urlCategory);
+      setTab('All Items');
+    }
+  }, [urlCategory]);
+
+  const handleCategoryFilterChange = (val) => {
+    setCatFilter(val);
+    if (val === 'All') {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('category');
+      setSearchParams(nextParams);
+    } else {
+      setSearchParams({ category: val });
+    }
+  };
 
   // Quick Convert/Log Current Stock as Dated Bill Modal
   const [showQuickBillModal, setShowQuickBillModal] = useState(false);
@@ -48,9 +72,18 @@ export default function Inventory() {
     productId: '',
     quantity: '',
     total: '',
+    note: '',
     date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
   });
   const [savingStock, setSavingStock] = useState(false);
+
+  // Edit Mistaken Item Modal
+  const [editItem, setEditItem] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // Delete Mistaken Item / Bill / Day Confirmation Modal
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deletingItems, setDeletingItems] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -90,11 +123,12 @@ export default function Inventory() {
           quantity: parseFloat(stockEntry.quantity),
           total: stockEntry.total !== '' ? parseFloat(stockEntry.total) : undefined,
           date: stockEntry.date ? `${stockEntry.date}T12:00:00.000Z` : undefined,
+          note: stockEntry.note ? stockEntry.note.trim() : undefined,
         }),
       });
       if (res.ok) {
         setShowAddStock(false);
-        setStockEntry({ productId: '', quantity: '', total: '', date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) });
+        setStockEntry({ productId: '', quantity: '', total: '', note: '', date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) });
         fetchData();
       } else {
         const j = await res.json().catch(() => ({}));
@@ -105,6 +139,68 @@ export default function Inventory() {
       alert('Error connecting to server');
     } finally {
       setSavingStock(false);
+    }
+  };
+
+  const handleUpdateItem = async (e) => {
+    e.preventDefault();
+    if (!editItem) return;
+    setSavingEdit(true);
+    try {
+      const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` };
+      const res = await fetch(`${API}/api/transactions/${editItem.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          type: 'PURCHASE',
+          productId: parseInt(editItem.productId),
+          quantity: parseFloat(editItem.quantity),
+          total: editItem.total !== '' ? parseFloat(editItem.total) : undefined,
+          date: editItem.date ? `${editItem.date}T12:00:00.000Z` : undefined,
+          note: editItem.note ? editItem.note.trim() : '',
+          adjustStock: editItem.adjustStock,
+        }),
+      });
+      if (res.ok) {
+        setEditItem(null);
+        fetchData();
+      } else {
+        const j = await res.json().catch(() => ({}));
+        alert(j.error || 'Failed to update entry');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error connecting to server');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteConfirm) return;
+    setDeletingItems(true);
+    try {
+      const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` };
+      const res = await fetch(`${API}/api/transactions`, {
+        method: 'DELETE',
+        headers,
+        body: JSON.stringify({
+          ids: deleteConfirm.ids,
+          revertStock: deleteConfirm.revertStock,
+        }),
+      });
+      if (res.ok) {
+        setDeleteConfirm(null);
+        fetchData();
+      } else {
+        const j = await res.json().catch(() => ({}));
+        alert(j.error || 'Failed to delete');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error connecting to server');
+    } finally {
+      setDeletingItems(false);
     }
   };
 
@@ -222,6 +318,24 @@ export default function Inventory() {
           </div>
         </div>
 
+        {/* Category Active Filter Bar */}
+        {catFilter !== 'All' && (
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 10,
+            background: '#EEF0FF', color: '#6C63FF', padding: '7px 16px',
+            borderRadius: 20, fontSize: 13, fontWeight: 700, marginBottom: 18,
+            boxShadow: '0 2px 6px rgba(108, 99, 255, 0.15)'
+          }}>
+            <span>Category Filter: <b>{catFilter}</b> ({filtered.length} products found)</span>
+            <button
+              onClick={() => handleCategoryFilterChange('All')}
+              style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#6C63FF', fontWeight: 800, fontSize: 13 }}
+            >
+              ✕ Clear Filter
+            </button>
+          </div>
+        )}
+
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 2, background: '#F4F5F7', borderRadius: 10, padding: 4, width: 'fit-content', marginBottom: 20 }}>
           {tabs.map(t => (
@@ -316,13 +430,33 @@ export default function Inventory() {
                         </p>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                       <span style={{ padding: '4px 12px', borderRadius: 16, background: '#EEF0FF', color: '#6C63FF', fontSize: 12, fontWeight: 700 }}>
                         Total Units: {fmtQty(group.totalUnits)}
                       </span>
                       <span style={{ padding: '6px 14px', borderRadius: 16, background: '#D6F5E3', color: '#16A34A', fontSize: 15, fontWeight: 800 }}>
                         Total Bill Amount: {inr(group.totalAmount)}
                       </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteConfirm({
+                            type: 'day',
+                            ids: group.items.map(r => r.id),
+                            title: `Delete all entries for ${fmtDay(group.date)}?`,
+                            subtitle: `${group.items.length} items (${fmtQty(group.totalUnits)} units) · Total Bill: ${inr(group.totalAmount)}`,
+                            revertStock: true
+                          });
+                        }}
+                        title="Delete all items logged on this date and revert stock"
+                        style={{
+                          padding: '6px 12px', borderRadius: 8, background: '#FFF1F2',
+                          color: '#E11D48', border: '1px solid #FECDD3', fontSize: 12, fontWeight: 700, cursor: 'pointer'
+                        }}
+                      >
+                        🗑️ Delete Day
+                      </button>
                     </div>
                   </div>
 
@@ -335,6 +469,7 @@ export default function Inventory() {
                             <th style={{ padding: '10px 18px', textAlign: 'right' }}>Quantity</th>
                             <th style={{ padding: '10px 18px', textAlign: 'right' }}>Rate</th>
                             <th style={{ padding: '10px 18px', textAlign: 'right', fontWeight: 700, color: '#0F1B2D' }}>Amount</th>
+                            <th style={{ padding: '10px 18px', textAlign: 'center' }}>Actions</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -346,12 +481,31 @@ export default function Inventory() {
                                     🧾 {b.ref} <span style={{ fontWeight: 500, color: '#8A94A6', marginLeft: 8 }}>{b.rows.length} item{b.rows.length === 1 ? '' : 's'}</span>
                                   </td>
                                   <td style={{ padding: '9px 18px', textAlign: 'right', fontWeight: 800, color: '#0F1B2D', borderTop: '1px solid #E8EAED' }}>{inr(b.total)}</td>
+                                  <td style={{ padding: '9px 18px', textAlign: 'center', borderTop: '1px solid #E8EAED' }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => setDeleteConfirm({
+                                        type: 'bill',
+                                        ids: b.rows.map(r => r.id),
+                                        title: `Delete entire bill "${b.ref}"?`,
+                                        subtitle: `${b.rows.length} items · Total Cost: ${inr(b.total)}`,
+                                        revertStock: true
+                                      })}
+                                      title="Delete this entire bill and revert stock"
+                                      style={{
+                                        padding: '4px 10px', borderRadius: 6, background: '#FEE2E2',
+                                        color: '#B91C1C', border: 'none', fontSize: 11, fontWeight: 700, cursor: 'pointer'
+                                      }}
+                                    >
+                                      🗑️ Delete Bill
+                                    </button>
+                                  </td>
                                 </tr>
                               )}
                               {b.rows.map(row => (
                                 <tr key={row.id} style={{ borderBottom: '1px solid #F4F5F7' }}>
                                   <td style={{ padding: '11px 18px 11px 30px', fontWeight: 600 }}>
-                                    <span style={{ marginRight: 6 }}>{row.product?.emoji || '📦'}</span>
+                                    <span style={{ marginRight: 6, fontSize: 16 }}>{getRelevantEmoji(row.product?.name, row.product?.category, row.product?.emoji)}</span>
                                     {row.product?.name || 'Unknown'}
                                     {row.product?.category && (
                                       <span style={{ marginLeft: 8, fontSize: 11, color: '#8A94A6', background: '#F4F5F7', padding: '2px 8px', borderRadius: 6 }}>
@@ -368,6 +522,47 @@ export default function Inventory() {
                                   <td style={{ padding: '11px 18px', textAlign: 'right', fontWeight: 800, color: '#0F1B2D' }}>
                                     {inr(row.total)}
                                   </td>
+                                  <td style={{ padding: '11px 18px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                    <div style={{ display: 'inline-flex', gap: 6 }}>
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditItem({
+                                          id: row.id,
+                                          productId: String(row.productId),
+                                          quantity: String(row.quantity),
+                                          total: String(row.total),
+                                          date: toDayStr(row.createdAt),
+                                          note: row.note || '',
+                                          product: row.product,
+                                          adjustStock: true
+                                        })}
+                                        title="Edit this entry"
+                                        style={{
+                                          padding: '5px 10px', borderRadius: 6, background: '#EEF0FF',
+                                          color: '#6C63FF', border: 'none', fontSize: 11, fontWeight: 700, cursor: 'pointer'
+                                        }}
+                                      >
+                                        ✏️ Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setDeleteConfirm({
+                                          type: 'single',
+                                          ids: [row.id],
+                                          title: `Delete entry for "${row.product?.name || 'Item'}"?`,
+                                          subtitle: `Quantity: +${fmtQty(row.quantity)} ${row.product?.unit || 'pcs'} · Total: ${inr(row.total)}`,
+                                          revertStock: true
+                                        })}
+                                        title="Delete this entry and restore stock"
+                                        style={{
+                                          padding: '5px 10px', borderRadius: 6, background: '#FEE2E2',
+                                          color: '#EF4444', border: 'none', fontSize: 11, fontWeight: 700, cursor: 'pointer'
+                                        }}
+                                      >
+                                        🗑️ Delete
+                                      </button>
+                                    </div>
+                                  </td>
                                 </tr>
                               ))}
                             </React.Fragment>
@@ -379,6 +574,7 @@ export default function Inventory() {
                             <td style={{ padding: '12px 18px', textAlign: 'right', fontWeight: 700 }}>{fmtQty(group.totalUnits)}</td>
                             <td></td>
                             <td style={{ padding: '12px 18px', textAlign: 'right', fontWeight: 800, color: '#16A34A' }}>{inr(group.totalAmount)}</td>
+                            <td></td>
                           </tr>
                         </tfoot>
                       </table>
@@ -428,8 +624,8 @@ export default function Inventory() {
           <>
             <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name or SKU..." style={{ ...fieldStyle, flex: 1, minWidth: 180 }} />
-              <select value={catFilter} onChange={e => setCatFilter(e.target.value)} style={fieldStyle}>
-                {categories.map(c => <option key={c}>{c}</option>)}
+              <select value={catFilter} onChange={e => handleCategoryFilterChange(e.target.value)} style={fieldStyle}>
+                {categories.map(c => <option key={c} value={c}>{c === 'All' ? 'All Categories' : c}</option>)}
               </select>
               <select value={sort} onChange={e => setSort(e.target.value)} style={fieldStyle}>
                 <option value="name">Sort: Name</option>
@@ -443,7 +639,7 @@ export default function Inventory() {
               {filtered.map(p => <ProductCard key={p.id} p={p} onClick={() => setSelected(p)} />)}
               {filtered.length === 0 && (
                 <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: '#8A94A6' }}>
-                  {tab === 'Low Stock' ? 'No low stock items.' : 'No products found. Click Add Item, or Import a CSV / Excel file.'}
+                  {tab === 'Low Stock' ? 'No low stock items.' : `No products found in category "${catFilter}". Click Add Item, or Import a CSV / Excel file.`}
                 </div>
               )}
             </div>
@@ -454,29 +650,68 @@ export default function Inventory() {
         {tab === 'Receiving Log' && (
           <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ margin: 0, width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
+              <table style={{ margin: 0, width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ background: '#FAFBFC' }}>
-                    {['Date', 'Product', 'Qty Received', 'Total Bill Cost', 'Logged By'].map(h => (
-                      <th key={h} style={{ padding: '12px 16px', whiteSpace: 'nowrap', borderBottom: '1px solid #E8EAED' }}>{h}</th>
+                    {['Date', 'Product', 'Qty Received', 'Total Bill Cost', 'Logged By', 'Actions'].map(h => (
+                      <th key={h} style={{ padding: '12px 16px', whiteSpace: 'nowrap', borderBottom: '1px solid #E8EAED', textAlign: h === 'Actions' ? 'center' : 'left' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {transactions.map((row, i) => (
-                    <tr key={i} style={{ borderBottom: '1px solid #F4F5F7' }}>
+                  {transactions.map((row) => (
+                    <tr key={row.id} style={{ borderBottom: '1px solid #F4F5F7' }}>
                       <td style={{ padding: '12px 16px', color: '#8A94A6', fontWeight: 600 }}>{fmtDay(row.createdAt)}</td>
                       <td style={{ padding: '12px 16px', fontWeight: 600 }}>
-                        <span style={{ marginRight: 6 }}>{row.product?.emoji || '📦'}</span>
+                        <span style={{ marginRight: 6, fontSize: 16 }}>{getRelevantEmoji(row.product?.name, row.product?.category, row.product?.emoji)}</span>
                         {row.product?.name || 'Unknown'}
                       </td>
                       <td style={{ padding: '12px 16px', fontWeight: 700, color: '#2ECC71' }}>+{fmtQty(row.quantity)} {row.product?.unit || ''}</td>
                       <td style={{ padding: '12px 16px', fontWeight: 700, color: '#0F1B2D' }}>{inr(row.total)}</td>
                       <td style={{ padding: '12px 16px', color: '#8A94A6' }}>User ID {row.userId}</td>
+                      <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                        <div style={{ display: 'inline-flex', gap: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => setEditItem({
+                              id: row.id,
+                              productId: String(row.productId),
+                              quantity: String(row.quantity),
+                              total: String(row.total),
+                              date: toDayStr(row.createdAt),
+                              note: row.note || '',
+                              product: row.product,
+                              adjustStock: true
+                            })}
+                            style={{
+                              padding: '5px 9px', borderRadius: 6, background: '#EEF0FF',
+                              color: '#6C63FF', border: 'none', fontSize: 11, fontWeight: 700, cursor: 'pointer'
+                            }}
+                          >
+                            ✏️ Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeleteConfirm({
+                              type: 'single',
+                              ids: [row.id],
+                              title: `Delete receiving log for "${row.product?.name || 'Item'}"?`,
+                              subtitle: `Quantity: +${fmtQty(row.quantity)} ${row.product?.unit || ''} · Total: ${inr(row.total)}`,
+                              revertStock: true
+                            })}
+                            style={{
+                              padding: '5px 9px', borderRadius: 6, background: '#FEE2E2',
+                              color: '#EF4444', border: 'none', fontSize: 11, fontWeight: 700, cursor: 'pointer'
+                            }}
+                          >
+                            🗑️ Delete
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                   {transactions.length === 0 && (
-                    <tr><td colSpan="5" style={{ textAlign: 'center', padding: '24px', color: '#8A94A6' }}>No receiving logs found. Make a purchase or import a bill to see logs here.</td></tr>
+                    <tr><td colSpan="6" style={{ textAlign: 'center', padding: '24px', color: '#8A94A6' }}>No receiving logs found. Make a purchase or import a bill to see logs here.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -488,7 +723,7 @@ export default function Inventory() {
       {/* QUICK ADD STOCK BILL / ITEM MODAL */}
       {showAddStock && (
         <Portal><div style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ width: 440, background: '#fff', borderRadius: 16, padding: 24, boxShadow: '0 8px 32px rgba(0,0,0,0.15)' }}>
+          <div style={{ width: 460, background: '#fff', borderRadius: 16, padding: 24, boxShadow: '0 8px 32px rgba(0,0,0,0.15)' }}>
             <h3 style={{ fontSize: 18, marginBottom: 16, fontWeight: 700 }}>Add Inventory Item from Bill</h3>
             <form onSubmit={handleSaveStockEntry} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Bill Date
@@ -521,7 +756,7 @@ export default function Inventory() {
                   <option value="" disabled>Select Product...</option>
                   {products.map(p => (
                     <option key={p.id} value={p.id}>
-                      {p.name} (Current: {fmtQty(p.quantity)} {p.unit || ''}) - ₹{p.price}
+                      {getRelevantEmoji(p.name, p.category, p.emoji)} {p.name} (Current: {fmtQty(p.quantity)} {p.unit || ''}) - ₹{p.price}
                     </option>
                   ))}
                 </select>
@@ -566,6 +801,16 @@ export default function Inventory() {
                   </label>
                 </div>
               </div>
+
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Bill Reference / Supplier (optional)
+                <input
+                  placeholder="e.g. Lalanji's - Bill 6893"
+                  value={stockEntry.note}
+                  onChange={e => setStockEntry({ ...stockEntry, note: e.target.value })}
+                  style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box' }}
+                />
+              </label>
+
               <p style={{ fontSize: 11, color: '#8A94A6' }}>
                 Note: This saves the exact bill total into {fmtDay(stockEntry.date)} inventory, directly quantifying your inventory cost for that date.
               </p>
@@ -583,6 +828,166 @@ export default function Inventory() {
         </div></Portal>
       )}
 
+      {/* EDIT INVENTORY ENTRY MODAL */}
+      {editItem && (
+        <Portal><div onClick={() => setEditItem(null)} style={{ position: 'fixed', inset: 0, zIndex: 250, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 480, background: '#fff', borderRadius: 16, padding: 24, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ fontSize: 18, fontWeight: 700 }}>Edit Inventory Entry</h3>
+              <button onClick={() => setEditItem(null)} style={{ border: 'none', background: '#F4F5F7', borderRadius: 8, width: 30, height: 30, cursor: 'pointer' }}>✕</button>
+            </div>
+            <form onSubmit={handleUpdateItem} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Bill Date
+                <input
+                  required
+                  type="date"
+                  value={editItem.date}
+                  onChange={e => setEditItem({ ...editItem, date: e.target.value })}
+                  style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box' }}
+                />
+              </label>
+
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Product
+                <select
+                  required
+                  value={editItem.productId}
+                  onChange={e => {
+                    const pid = e.target.value;
+                    const p = products.find(x => x.id === parseInt(pid));
+                    const qty = parseFloat(editItem.quantity) || 1;
+                    const rate = p ? (p.costPrice || p.price || 0) : 0;
+                    setEditItem({
+                      ...editItem,
+                      productId: pid,
+                      total: String(Math.round(qty * rate * 100) / 100)
+                    });
+                  }}
+                  style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc' }}
+                >
+                  {products.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {getRelevantEmoji(p.name, p.category, p.emoji)} {p.name} (Current: {fmtQty(p.quantity)} {p.unit || ''})
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div style={{ display: 'flex', gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Quantity
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={editItem.quantity}
+                      onChange={e => {
+                        const q = e.target.value;
+                        const p = products.find(x => x.id === parseInt(editItem.productId));
+                        const rate = p ? (p.costPrice || p.price || 0) : 0;
+                        setEditItem({
+                          ...editItem,
+                          quantity: q,
+                          total: q && rate ? String(Math.round(parseFloat(q) * rate * 100) / 100) : editItem.total
+                        });
+                      }}
+                      style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    />
+                  </label>
+                </div>
+                <div style={{ flex: 1.2 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Total Cost (₹)
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={editItem.total}
+                      onChange={e => setEditItem({ ...editItem, total: e.target.value })}
+                      style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', fontWeight: 700, boxSizing: 'border-box' }}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#8A94A6' }}>Bill Reference / Note
+                <input
+                  placeholder="e.g. Lalanji's - Bill 6893"
+                  value={editItem.note}
+                  onChange={e => setEditItem({ ...editItem, note: e.target.value })}
+                  style={{ width: '100%', marginTop: 4, padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box' }}
+                />
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#334155', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={editItem.adjustStock}
+                  onChange={e => setEditItem({ ...editItem, adjustStock: e.target.checked })}
+                />
+                <span>Automatically adjust Master Stock for difference</span>
+              </label>
+
+              <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                <button type="button" onClick={() => setEditItem(null)} style={{ flex: 1, padding: 10, background: '#F4F5F7', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+                  Cancel
+                </button>
+                <button type="submit" disabled={savingEdit} style={{ flex: 1, padding: 10, background: '#2ECC71', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>
+                  {savingEdit ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div></Portal>
+      )}
+
+      {/* DELETE CONFIRMATION MODAL */}
+      {deleteConfirm && (
+        <Portal><div onClick={() => setDeleteConfirm(null)} style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 440, background: '#fff', borderRadius: 16, padding: 24, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ fontSize: 17, fontWeight: 700, color: '#DC2626', marginBottom: 10 }}>
+              {deleteConfirm.title}
+            </h3>
+            <p style={{ fontSize: 13, color: '#64748B', lineHeight: 1.5, marginBottom: 16 }}>
+              {deleteConfirm.subtitle}
+            </p>
+
+            <div style={{ background: '#FFF1F2', padding: 12, borderRadius: 10, marginBottom: 18, border: '1px solid #FECDD3' }}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12, fontWeight: 600, color: '#991B1B', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  style={{ marginTop: 2 }}
+                  checked={deleteConfirm.revertStock}
+                  onChange={e => setDeleteConfirm({ ...deleteConfirm, revertStock: e.target.checked })}
+                />
+                <span>
+                  <b>Revert master product stock:</b> Subtracted quantity will be removed from your current stock count so accidental additions don't inflate your inventory.
+                </span>
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirm(null)}
+                style={{ padding: '9px 18px', borderRadius: 10, background: '#F4F5F7', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={deletingItems}
+                style={{ padding: '9px 20px', borderRadius: 10, background: '#DC2626', color: '#fff', border: 'none', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+              >
+                {deletingItems ? 'Deleting...' : 'Delete Entry'}
+              </button>
+            </div>
+          </div>
+        </div></Portal>
+      )}
+
+      {/* QUICK BILL MODAL */}
       {showQuickBillModal && (
         <Portal><div onClick={() => setShowQuickBillModal(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 }}>
           <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 480, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>

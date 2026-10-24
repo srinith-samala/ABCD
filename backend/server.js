@@ -7,6 +7,7 @@ const Acc = require('./accounting');
 const repair = require('./repair');
 const { parseSalesBillFile, looksLikeSalesSummary } = require('./salesBillParser');
 const { buildWorkbookBuffer } = require('./exportWorkbook');
+const { getRelevantEmoji } = require('./emojiMap');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
@@ -123,7 +124,11 @@ function readProductBody(body, { partial }) {
     data.reorderLevel = r;
   }
   if (has('sku')) data.sku = blank(body.sku) ? null : String(body.sku).trim().slice(0, 60);
-  if (has('emoji')) data.emoji = blank(body.emoji) ? '📦' : String(body.emoji).trim().slice(0, 8);
+  if (has('emoji')) {
+    data.emoji = blank(body.emoji) ? getRelevantEmoji(data.name || body.name, body.category) : String(body.emoji).trim().slice(0, 8);
+  } else if (has('name')) {
+    data.emoji = getRelevantEmoji(body.name, body.category);
+  }
   if (has('description')) data.description = blank(body.description) ? null : String(body.description).trim().slice(0, 500);
   if (has('supplierId')) data.supplierId = blank(body.supplierId) ? null : parseInt(body.supplierId);
   if (has('expiryDate')) {
@@ -717,7 +722,12 @@ app.delete('/api/stock/:id', authenticateToken, async (req, res) => {
 // --- CATEGORY ROUTES ---
 app.get('/api/categories', authenticateToken, async (req, res) => {
   try {
-    const categories = await prisma.category.findMany();
+    const categories = await prisma.category.findMany({
+      include: {
+        _count: { select: { products: true } }
+      },
+      orderBy: { name: 'asc' }
+    });
     res.json(categories);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -730,11 +740,52 @@ app.post('/api/categories', authenticateToken, async (req, res) => {
     if (!name) return res.status(400).json({ error: 'Category name is required' });
     const exists = (await prisma.category.findMany()).some(c => c.name.toLowerCase() === name.toLowerCase());
     if (exists) return res.status(400).json({ error: 'This category already exists' });
-    const category = await prisma.category.create({ data: { name } });
+    const category = await prisma.category.create({
+      data: { name },
+      include: { _count: { select: { products: true } } }
+    });
     if (req.user.role !== 'ADMIN') {
       await prisma.notification.create({ data: { message: `${req.user.name} added a new category: ${name}` } });
     }
     res.json(category);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/categories/:id', authenticateToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const name = String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Category name is required' });
+    const duplicate = (await prisma.category.findMany()).some(c => c.id !== id && c.name.toLowerCase() === name.toLowerCase());
+    if (duplicate) return res.status(400).json({ error: 'Another category with this name already exists' });
+    const category = await prisma.category.update({
+      where: { id },
+      data: { name },
+      include: { _count: { select: { products: true } } }
+    });
+    if (req.user.role !== 'ADMIN') {
+      await prisma.notification.create({ data: { message: `${req.user.name} updated category: ${name}` } });
+    }
+    res.json(category);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await prisma.product.updateMany({
+      where: { categoryId: id },
+      data: { categoryId: null }
+    });
+    const category = await prisma.category.delete({ where: { id } });
+    if (req.user.role !== 'ADMIN') {
+      await prisma.notification.create({ data: { message: `${req.user.name} deleted category: ${category.name}` } });
+    }
+    res.json({ success: true, message: 'Category deleted' });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -836,7 +887,7 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
 
 // Edit an order. The stock effect of the OLD order is undone and the NEW one applied, so stock stays correct.
 // `adjustStock=false` edits the record only and leaves product stock untouched.
-app.put('/api/transactions/:id', authenticateToken, isAdmin, async (req, res) => {
+app.put('/api/transactions/:id', authenticateToken, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const old = await prisma.transaction.findUnique({ where: { id } });
@@ -848,6 +899,7 @@ app.put('/api/transactions/:id', authenticateToken, isAdmin, async (req, res) =>
     const qty = req.body.quantity !== undefined ? round3(parseFloat(req.body.quantity)) : old.quantity;
     if (!(qty > 0)) return res.status(400).json({ error: 'Quantity must be greater than 0' });
     const adjustStock = String(req.body.adjustStock) !== 'false';
+    const note = req.body.note !== undefined ? (req.body.note ? String(req.body.note).trim() : null) : old.note;
 
     const newProduct = await prisma.product.findUnique({ where: { id: productId } });
     if (!newProduct) return res.status(404).json({ error: 'Product not found' });
@@ -857,11 +909,11 @@ app.put('/api/transactions/:id', authenticateToken, isAdmin, async (req, res) =>
       total = round2(parseFloat(req.body.total));
       if (!(total >= 0)) return res.status(400).json({ error: 'Total must be 0 or more' });
     } else {
-      total = round2(qty * newProduct.price);
+      total = round2(qty * (newProduct.costPrice || newProduct.price || 0));
     }
     let createdAt = old.createdAt;
     if (req.body.date) {
-      const d = new Date(req.body.date);
+      const d = parseSafeDate(req.body.date);
       if (isNaN(d.getTime())) return res.status(400).json({ error: 'Invalid date' });
       createdAt = d;
     }
@@ -872,7 +924,7 @@ app.put('/api/transactions/:id', authenticateToken, isAdmin, async (req, res) =>
         const oldProd = await tx.product.findUnique({ where: { id: old.productId } });
         if (oldProd) {
           const undone = round3(oldProd.quantity + (old.type === 'SALE' ? old.quantity : -old.quantity));
-          if (undone < 0) throw new Error(`Cannot edit: stock of "${oldProd.name}" would go negative. Tick "Don't change stock" to edit the record only.`);
+          if (undone < 0) throw new Error(`Cannot edit: stock of "${oldProd.name}" would go negative. Untick "Adjust stock" to edit the record only.`);
           await tx.product.update({ where: { id: oldProd.id }, data: { quantity: undone } });
         }
         // 2) apply new effect
@@ -883,24 +935,48 @@ app.put('/api/transactions/:id', authenticateToken, isAdmin, async (req, res) =>
       }
       return tx.transaction.update({
         where: { id },
-        data: { type, productId, quantity: qty, total, createdAt },
+        data: { type, productId, quantity: qty, total, createdAt, note },
         include: { product: true },
       });
     });
+    if (req.user.role !== 'ADMIN') {
+      await prisma.notification.create({ data: { message: `${req.user.name} edited a transaction (TRX-${id})` } });
+    }
     res.json(updated);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-// Delete one or many orders: DELETE /api/transactions  body { ids: [1,2,3], revertStock: false }
-// By default stock is NOT changed (so removing wrongly-created orders never touches your inventory).
-// `revertStock=true` also undoes the stock effect of each deleted order.
-app.delete('/api/transactions', authenticateToken, isAdmin, async (req, res) => {
+// Delete one or many transactions: DELETE /api/transactions body { ids: [1,2,3], day: 'YYYY-MM-DD', note: 'Bill...', revertStock: true }
+// `revertStock=true` undoes the stock effect of each deleted entry.
+app.delete('/api/transactions', authenticateToken, async (req, res) => {
   try {
-    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n)).filter(Number.isInteger) : [];
-    if (ids.length === 0) return res.status(400).json({ error: 'No orders selected' });
+    let ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n)).filter(Number.isInteger) : [];
     const revertStock = req.body.revertStock === true || String(req.body.revertStock) === 'true';
+
+    // If day is passed, find all transactions on that day (in local IST day range)
+    if (ids.length === 0 && req.body.day) {
+      const dStr = String(req.body.day).slice(0, 10);
+      const start = new Date(`${dStr}T00:00:00.000Z`);
+      const end = new Date(`${dStr}T23:59:59.999Z`);
+      // Also account for IST +/- 12h
+      const dayRows = await prisma.transaction.findMany({
+        where: {
+          createdAt: {
+            gte: new Date(start.getTime() - 14 * 3600 * 1000),
+            lte: new Date(end.getTime() + 14 * 3600 * 1000),
+          }
+        }
+      });
+      const istDay = (d) => new Date(new Date(d).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+      ids = dayRows.filter(r => istDay(r.createdAt) === dStr).map(r => r.id);
+    } else if (ids.length === 0 && req.body.note) {
+      const noteRows = await prisma.transaction.findMany({ where: { note: String(req.body.note).trim() } });
+      ids = noteRows.map(r => r.id);
+    }
+
+    if (ids.length === 0) return res.status(400).json({ error: 'No items or bill found to delete' });
 
     const deleted = await prisma.$transaction(async (tx) => {
       const rows = await tx.transaction.findMany({ where: { id: { in: ids } } });
@@ -909,13 +985,17 @@ app.delete('/api/transactions', authenticateToken, isAdmin, async (req, res) => 
           const p = await tx.product.findUnique({ where: { id: t.productId } });
           if (!p) continue;
           const q = round3(p.quantity + (t.type === 'SALE' ? t.quantity : -t.quantity));
-          if (q < 0) throw new Error(`Cannot reverse stock for "${p.name}" (it would go negative). Delete without changing stock instead.`);
+          if (q < 0) throw new Error(`Cannot reverse stock for "${p.name}" (it would go negative). Delete without reversing stock instead.`);
           await tx.product.update({ where: { id: p.id }, data: { quantity: q } });
         }
       }
       const r = await tx.transaction.deleteMany({ where: { id: { in: rows.map(t => t.id) } } });
       return r.count;
     }, { timeout: 60000, maxWait: 20000 });
+
+    if (req.user.role !== 'ADMIN') {
+      await prisma.notification.create({ data: { message: `${req.user.name} deleted ${deleted} inventory transaction(s)` } });
+    }
     res.json({ deleted, revertStock });
   } catch (err) {
     res.status(400).json({ error: err.message });

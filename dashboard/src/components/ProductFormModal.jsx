@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { API } from '../config';
+import { getRelevantEmoji, EMOJI_PALETTE } from '../emojiMap';
 import Portal from './Portal';
 
 const UNITS = ['pcs', 'kg', 'g', 'L', 'ml', 'pack', 'box', 'dozen', 'bottle'];
@@ -21,6 +22,7 @@ export default function ProductFormModal({ product, onClose, onSaved }) {
   const [suppliers, setSuppliers] = useState([]);
   const [saving, setSaving] = useState(false);
   const [newCat, setNewCat] = useState('');
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [f, setF] = useState({
     name: product?.name || '',
     category: product?.category?.name || '',
@@ -30,10 +32,21 @@ export default function ProductFormModal({ product, onClose, onSaved }) {
     unit: product?.unit || 'pcs',
     reorderLevel: product?.reorderLevel ?? 10,
     sku: product?.sku || '',
-    emoji: product?.emoji || '📦',
+    emoji: product ? getRelevantEmoji(product.name, product.category, product.emoji) : '📦',
     description: product?.description || '',
   });
   const set = (k, v) => setF(prev => ({ ...prev, [k]: v }));
+
+  const handleNameChange = (val) => {
+    setF(prev => {
+      const updated = { ...prev, name: val };
+      // Auto-suggest emoji if user hasn't explicitly customized it to something else
+      if (!prev.emoji || prev.emoji === '📦' || prev.emoji === getRelevantEmoji(prev.name, prev.category, '')) {
+        updated.emoji = getRelevantEmoji(val, prev.category, '');
+      }
+      return updated;
+    });
+  };
 
   useEffect(() => {
     const headers = { 'Authorization': `Bearer ${localStorage.getItem('token')}` };
@@ -89,11 +102,59 @@ export default function ProductFormModal({ product, onClose, onSaved }) {
           <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 14 }}>
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>Product name *</label>
-              <input style={inputStyle} value={f.name} onChange={e => set('name', e.target.value)} autoFocus />
+              <input style={inputStyle} value={f.name} onChange={e => handleNameChange(e.target.value)} autoFocus />
             </div>
-            <div style={{ width: 84 }}>
+            <div style={{ width: 96, position: 'relative' }}>
               <label style={labelStyle}>Emoji</label>
-              <input style={{ ...inputStyle, textAlign: 'center' }} value={f.emoji} maxLength={4} onChange={e => set('emoji', e.target.value)} />
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                  title="Click to pick relevant emoji"
+                  style={{
+                    width: '100%', padding: '7px 8px', borderRadius: 10, border: '1.5px solid #CBD5E1',
+                    fontSize: 22, background: '#F8FAFC', cursor: 'pointer', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s'
+                  }}
+                >
+                  {f.emoji || '📦'}
+                </button>
+              </div>
+
+              {showEmojiPicker && (
+                <div style={{
+                  position: 'absolute', top: '105%', right: 0, zIndex: 1000,
+                  width: 290, background: '#fff', borderRadius: 12, padding: 12,
+                  boxShadow: '0 8px 30px rgba(0,0,0,0.2)', border: '1px solid #E2E8F0',
+                  maxHeight: 260, overflowY: 'auto'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase' }}>Select Emoji</span>
+                    <button type="button" onClick={() => setShowEmojiPicker(false)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 13, color: '#8A94A6' }}>✕</button>
+                  </div>
+                  {EMOJI_PALETTE.map(cat => (
+                    <div key={cat.category} style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: '#94A3B8', marginBottom: 4 }}>{cat.category}</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+                        {cat.emojis.map(em => (
+                          <button
+                            key={em}
+                            type="button"
+                            onClick={() => { set('emoji', em); setShowEmojiPicker(false); }}
+                            style={{
+                              fontSize: 18, border: f.emoji === em ? '2px solid #2ECC71' : '1px solid #F1F5F9',
+                              borderRadius: 6, background: f.emoji === em ? '#E8FDF0' : '#fff',
+                              cursor: 'pointer', padding: 4, textAlign: 'center'
+                            }}
+                          >
+                            {em}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 

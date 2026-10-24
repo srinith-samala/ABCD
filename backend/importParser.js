@@ -1,6 +1,7 @@
 // Parses an uploaded CSV / XLSX file into validated product rows.
 const ExcelJS = require('exceljs');
 const { Readable } = require('stream');
+const { getRelevantEmoji } = require('./emojiMap');
 
 const MAX_ROWS = 1000;
 
@@ -288,7 +289,7 @@ async function parseProductsFile(buffer, filename) {
       unit: (get('unit') || qtyUnit).slice(0, 20) || 'pcs',
       reorderLevel: Math.round(reorderLevel),
       sku: get('sku').slice(0, 60) || null,
-      emoji: get('emoji').slice(0, 8) || '📦',
+      emoji: getRelevantEmoji(name, split.category || get('category'), get('emoji').slice(0, 8)),
       costPrice: costPrice !== null ? costPrice : (lineTotal !== null && quantity > 0 ? round2(lineTotal / quantity) : null),
       description: get('description').slice(0, 500) || null,
       supplier: (get('supplier') || split.supplier).slice(0, 80) || null,
