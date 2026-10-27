@@ -79,18 +79,21 @@ export default function PandL() {
           {prev && <p style={{ fontSize: 12.5, color: '#5B6577', marginTop: 4 }}>vs {prev.label}: {signed(prev.netProfit)} · sales {dSales >= 0 ? '▲' : '▼'} {Math.abs(dSales).toFixed(1)}% · costs {dExp >= 0 ? '▲' : '▼'} {Math.abs(dExp).toFixed(1)}%</p>}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 20 }}>
           {[
-            ['Total sales', money(pnl.sales.total), '#16A34A', 'From daily sales / bills'],
-            ['Inventory bought', money(pnl.cogs), '#F59E0B', `${pnl.foodCostPct.toFixed(1)}% of sales`],
-            ['Gross profit', signed(pnl.grossProfit), pnl.grossProfit >= 0 ? '#16A34A' : '#EF4444', `${(pnl.grossMargin || 0).toFixed(1)}% margin (Sales - Inventory)`],
-            ['Worker salaries', money(pnl.salaryLine), '#6C63FF', `${money(pnl.salaryLine)} · ${pnl.employees.length} staff`],
+            ['Sales Revenue', money(pnl.sales.total), '#16A34A', 'From daily sales / bills'],
+            ['Opening Stock', money(pnl.openingStock || 0), '#6C63FF', 'Brought in manually'],
+            ['Inventory Purchases', money(pnl.inventoryPurchases || 0), '#0284C7', 'Purchases during month'],
+            ['Closing Stock', money(pnl.closingStock || 0), '#10B981', pnl.isReconciled ? 'Reconciled remaining stock' : 'Not reconciled yet'],
+            ['Inventory Consumed', money(pnl.cogs), '#F59E0B', `${(pnl.foodCostPct || 0).toFixed(1)}% of sales (COGS)`],
+            ['Gross profit', signed(pnl.grossProfit), pnl.grossProfit >= 0 ? '#16A34A' : '#EF4444', `${(pnl.grossMargin || 0).toFixed(1)}% margin (Sales - Consumed)`],
+            ['Payroll (Salaries)', money(pnl.salaryLine), '#8B5CF6', `${money(pnl.salaryLine)} · ${pnl.employees.length} staff`],
             ['Other expenses', money(pnl.otherExpenses || 0), '#0F1B2D', 'rent, utilities, gas, misc'],
           ].map(([l, v, c, sub]) => (
-            <div key={l} className="card">
+            <div key={l} className="card" style={{ padding: '14px 16px' }}>
               <p style={{ fontSize: 11, color: '#8A94A6', fontWeight: 600, textTransform: 'uppercase' }}>{l}</p>
-              <p style={{ fontSize: 24, fontWeight: 700, color: c, marginTop: 6 }}>{v}</p>
-              <p style={{ fontSize: 11, color: '#8A94A6', marginTop: 4 }}>{sub}</p>
+              <p style={{ fontSize: 22, fontWeight: 700, color: c, marginTop: 4 }}>{v}</p>
+              <p style={{ fontSize: 11, color: '#8A94A6', marginTop: 3 }}>{sub}</p>
             </div>
           ))}
         </div>
@@ -98,25 +101,35 @@ export default function PandL() {
         <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 20 }}>
           <div className="card" style={{ flex: '1 1 380px', minWidth: 0, padding: 0, overflow: 'hidden' }}>
             <h3 style={{ fontSize: 14, fontWeight: 700, padding: '16px 12px 10px' }}>Statement - {pnl.label}</h3>
-            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '4px 12px' }}>1. SALES</p>
+
+            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '4px 12px' }}>1. SALES REVENUE</p>
             {channels.map(([l, v]) => row(l, v, { indent: true, pct: pc(v) }))}
-            {row('Total sales', pnl.sales.total, { bold: true })}
+            {row('Total Sales Revenue', pnl.sales.total, { bold: true })}
 
-            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '10px 12px 4px' }}>2. INVENTORY (COST OF GOODS)</p>
-            {pnl.inventoryPurchases > 0 ? (
-              row('Inventory bought (purchases)', pnl.inventoryPurchases, { indent: true, pct: pc(pnl.inventoryPurchases) })
-            ) : (
-              <>
-                {row('Food & raw material', groupAmt('Food'), { indent: true, pct: pc(groupAmt('Food')) })}
-                {row('Containers & packaging', groupAmt('Packaging'), { indent: true, pct: pc(groupAmt('Packaging')) })}
-              </>
-            )}
-            {row('Gross profit (Sales − Inventory)', pnl.grossProfit, { bold: true, pct: pc(pnl.grossProfit), color: pnl.grossProfit >= 0 ? '#16A34A' : '#EF4444' })}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px 4px' }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: '#16A34A' }}>2. INVENTORY & COST OF GOODS SOLD</span>
+              {pnl.isReconciled ? (
+                <span style={{ fontSize: 10.5, fontWeight: 700, background: '#DCFCE7', color: '#166534', padding: '2px 8px', borderRadius: 6 }}>
+                  ✓ Reconciled Closing Stock
+                </span>
+              ) : (
+                <span style={{ fontSize: 10.5, fontWeight: 600, background: '#F1F5F9', color: '#64748B', padding: '2px 8px', borderRadius: 6 }}>
+                  Closing stock not set
+                </span>
+              )}
+            </div>
 
-            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '10px 12px 4px' }}>3. OPERATING OVERHEADS & SALARIES</p>
-            {row('Salaries & wages (Workers)', pnl.salaryLine, { indent: true, pct: pc(pnl.salaryLine) })}
+            {row('Opening Stock (brought in manually)', pnl.openingStock || 0, { indent: true, pct: pc(pnl.openingStock) })}
+            {row('Add: Inventory Purchases', pnl.inventoryPurchases || 0, { indent: true, pct: pc(pnl.inventoryPurchases) })}
+            {row('Total Stock Available', (pnl.totalStockAvailable || ((pnl.openingStock || 0) + (pnl.inventoryPurchases || 0))), { indent: true, color: '#0F1B2D' })}
+            {pnl.isReconciled && row('Less: Month-End Closing Stock', -(pnl.closingStock || 0), { indent: true, color: '#16A34A', pct: pc(pnl.closingStock) })}
+            {row(pnl.isReconciled ? 'Inventory Consumed (COGS)' : 'Inventory Consumed / Purchases', pnl.cogs, { bold: true, pct: pc(pnl.cogs) })}
+            {row('Gross Profit (Sales − Inventory Consumed)', pnl.grossProfit, { bold: true, pct: pc(pnl.grossProfit), color: pnl.grossProfit >= 0 ? '#16A34A' : '#EF4444' })}
+
+            <p style={{ fontSize: 11, fontWeight: 700, color: '#16A34A', padding: '10px 12px 4px' }}>3. PAYROLL & OTHER EXPENSES</p>
+            {row('Salaries & wages (Payroll)', pnl.salaryLine, { indent: true, pct: pc(pnl.salaryLine) })}
             {pnl.opexLines.map(l => row(LABELS[l.group] || l.group, l.amount, { indent: true, pct: pc(l.amount) }))}
-            {row('Total overheads (Salaries + Other Expenses)', pnl.opex, { bold: true })}
+            {row('Total Overheads & Expenses (Payroll + Other)', pnl.opex, { bold: true })}
 
             {row(isProfit ? 'NET PROFIT (Gross Profit − Overheads)' : 'NET LOSS', pnl.netProfit, { bold: true, color: isProfit ? '#16A34A' : '#EF4444', pct: pc(pnl.netProfit) })}
             {(pnl.tax > 0 || pnl.transfer > 0) && (

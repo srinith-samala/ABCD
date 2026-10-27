@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
-const { parseProductsFile, planImport, mergeDuplicateRows, mergeByProduct } = require('./importParser');
+const { parseProductsFile, parseClosingStockFile, planImport, mergeDuplicateRows, mergeByProduct, norm } = require('./importParser');
 const { parseOrdersFile } = require('./purchaseParser');
 const Acc = require('./accounting');
 const repair = require('./repair');
@@ -297,6 +297,8 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
     const recordPurchase = req.body.recordPurchase !== 'false'; // default TRUE for dated daily inventory
     const billDateStr = req.body.billDate || req.body.date;
     const billDate = parseSafeDate(billDateStr);
+    const importType = req.body.importType === 'OPENING_STOCK' || String(req.body.isOpeningStock) === 'true' ? 'OPENING_STOCK' : 'PURCHASE';
+    const isOpeningStock = importType === 'OPENING_STOCK';
 
     const { rows: lineRows, mergedCount } = mergeDuplicateRows(parsed.rows); // one row per bill line
     const rows = mergeByProduct(lineRows);                                    // one row per product (stock is added per product)
@@ -336,15 +338,31 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
     // bills already imported on the same day (same bill reference) -> uploading again would double stock and cost
     const refs = [...new Set(billLines.map(l => l.billRef).filter(Boolean))];
     let duplicateBills = [];
-    if (refs.length) {
+    if (refs.length && !isOpeningStock) {
       const prior = await prisma.transaction.findMany({ where: { type: 'PURCHASE', note: { in: refs } }, select: { note: true, createdAt: true } });
       const seen = new Set(prior.map(t => `${t.note}|${istDayStr(t.createdAt)}`));
       duplicateBills = refs.filter(ref => billLines.some(l => l.billRef === ref && seen.has(`${ref}|${istDayStr(dayOf(l))}`)));
     }
 
+    // Opening stock duplicate check: prevent importing opening stock for the same month twice by accident
+    let duplicateOpeningStock = null;
+    const targetMonth = Acc.monthKey(billDate);
+    if (isOpeningStock && targetMonth) {
+      const [y, m] = targetMonth.split('-').map(Number);
+      const startMonth = new Date(Date.UTC(y, m - 1, 1));
+      const endMonth = new Date(Date.UTC(y, m, 1));
+      const priorOpening = await prisma.transaction.findFirst({
+        where: { type: 'OPENING_STOCK', createdAt: { gte: startMonth, lt: endMonth } },
+        select: { createdAt: true, total: true }
+      });
+      if (priorOpening) {
+        duplicateOpeningStock = `Opening stock for ${Acc.monthLabel(targetMonth)} was already imported on ${priorOpening.createdAt.toISOString().slice(0, 10)}. Importing again will add these quantities to inventory.`;
+      }
+    }
+
     const byBill = new Map();
     billLines.forEach(l => {
-      const k = l.billRef || 'No bill reference';
+      const k = l.billRef || (isOpeningStock ? 'Opening Stock' : 'No bill reference');
       const g = byBill.get(k) || { ref: k, supplier: l.supplier || '', items: 0, units: 0, total: 0 };
       g.items++; g.units = round3(g.units + l.quantity); g.total = round2(g.total + amountOf(l));
       byBill.set(k, g);
@@ -353,6 +371,11 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
 
     const base = {
       billDate: billDateStr || billDate.toISOString().slice(0, 10),
+      importType,
+      isOpeningStock,
+      targetMonth,
+      targetMonthLabel: targetMonth ? Acc.monthLabel(targetMonth) : '',
+      duplicateOpeningStock,
       totalUnitsToAdd,
       estimatedBillCost,
       fileTotal: parsed.fileTotal,
@@ -390,8 +413,12 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
     };
     if (preview) return res.json({ preview: true, ...base });
 
-    if (duplicateBills.length && recordPurchase && String(req.body.allowDuplicate) !== 'true') {
+    if (duplicateBills.length && recordPurchase && !isOpeningStock && String(req.body.allowDuplicate) !== 'true') {
       return res.status(409).json({ code: 'DUPLICATE_BILLS', duplicateBills, error: `These bills are already recorded for this date: ${duplicateBills.slice(0, 5).join(', ')}. Importing them again would double the stock and cost.` });
+    }
+
+    if (duplicateOpeningStock && String(req.body.allowDuplicate) !== 'true') {
+      return res.status(409).json({ code: 'DUPLICATE_OPENING_STOCK', error: duplicateOpeningStock });
     }
 
     // suppliers + their phone numbers are handled for every row
@@ -450,14 +477,16 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
           added++;
         }
 
-        // one dated PURCHASE per bill line, so every bill keeps its own lines, supplier reference and amount
+        // Record transactions: OPENING_STOCK for opening stock imports, PURCHASE for supplier bills
         if (recordPurchase) {
+          const txType = isOpeningStock ? 'OPENING_STOCK' : 'PURCHASE';
+          const defaultNote = isOpeningStock ? 'Opening Stock' : null;
           for (const l of billLines) {
             const pid = idByName.get(l.name.toLowerCase());
             if (!pid) continue;
             const total = amountOf(l);
             await tx.transaction.create({
-              data: { productId: pid, type: 'PURCHASE', quantity: l.quantity, total, userId: req.user.id, createdAt: dayOf(l), note: l.billRef || null },
+              data: { productId: pid, type: txType, quantity: l.quantity, total, userId: req.user.id, createdAt: dayOf(l), note: l.billRef || defaultNote },
             });
             recordedTotal = round2(recordedTotal + total);
             recordedUnits = round3(recordedUnits + l.quantity);
@@ -466,7 +495,8 @@ app.post('/api/stock/import', authenticateToken, uploadFile, async (req, res) =>
       }, { timeout: 120000, maxWait: 20000 });
 
       if (req.user.role !== 'ADMIN') {
-        await prisma.notification.create({ data: { message: `${req.user.name} imported inventory for ${billDate.toISOString().slice(0, 10)}: ${created} new products, stock added to ${added}` } });
+        const actionLabel = isOpeningStock ? 'imported Opening Stock' : 'imported inventory';
+        await prisma.notification.create({ data: { message: `${req.user.name} ${actionLabel} for ${billDate.toISOString().slice(0, 10)}: ${created} new products, stock added to ${added}` } });
       }
     }
 
@@ -543,6 +573,395 @@ app.post('/api/stock/create-daily-bill', authenticateToken, isAdmin, async (req,
     });
   } catch (err) {
     console.error('Failed to create daily bill:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// MONTH-END CLOSING STOCK RECONCILIATION ENDPOINTS
+// ============================================================================
+
+// List all saved month-end closings and available months
+app.get('/api/closing-stock', authenticateToken, async (req, res) => {
+  try {
+    const closings = await prisma.monthClosing.findMany({ orderBy: { month: 'desc' } });
+    const data = await loadAccounting();
+    const months = Acc.availableMonths(data);
+    res.json({
+      closings,
+      availableMonths: months.map(m => ({ key: m, label: Acc.monthLabel(m) })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get a single saved month-end closing record
+app.get('/api/closing-stock/:month', authenticateToken, async (req, res) => {
+  try {
+    const { month } = req.params;
+    const closing = await prisma.monthClosing.findUnique({ where: { month } });
+    if (!closing) return res.status(404).json({ error: `No closing record found for ${month}` });
+    let parsedDetails = null;
+    if (closing.details) {
+      try { parsedDetails = JSON.parse(closing.details); } catch (e) {}
+    }
+    res.json({
+      ...closing,
+      details: parsedDetails,
+      monthLabel: Acc.monthLabel(month),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Preview Month-End Closing Stock file against current inventory & calculations
+app.post('/api/closing-stock/preview', authenticateToken, uploadFile, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No closing file uploaded' });
+    const month = req.body.month;
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'A valid month (YYYY-MM) is required' });
+    }
+
+    let parsed;
+    try {
+      parsed = await parseClosingStockFile(req.file.buffer, req.file.originalname);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    const existingProducts = await prisma.product.findMany({
+      select: { id: true, name: true, sku: true, quantity: true, price: true, costPrice: true, unit: true, categoryId: true, category: { select: { name: true } } }
+    });
+    const existingByName = new Map(existingProducts.map(p => [norm(p.name), p]));
+    const existingBySku = new Map(existingProducts.filter(p => p.sku).map(p => [norm(p.sku), p]));
+
+    // Calculate Opening Stock & Purchases for this month from database transactions
+    const [y, m] = month.split('-').map(Number);
+    const startMonth = new Date(Date.UTC(y, m - 1, 1));
+    const endMonth = new Date(Date.UTC(y, m, 1));
+
+    const monthTx = await prisma.transaction.findMany({
+      where: {
+        createdAt: { gte: startMonth, lt: endMonth },
+        type: { in: ['OPENING_STOCK', 'PURCHASE'] }
+      }
+    });
+
+    const openingStockValue = round2(monthTx.filter(t => t.type === 'OPENING_STOCK').reduce((s, t) => s + (Number(t.total) || 0), 0));
+    const openingStockUnits = round3(monthTx.filter(t => t.type === 'OPENING_STOCK').reduce((s, t) => s + (Number(t.quantity) || 0), 0));
+
+    const purchasesValue = round2(monthTx.filter(t => t.type === 'PURCHASE').reduce((s, t) => s + (Number(t.total) || 0), 0));
+    const purchasesUnits = round3(monthTx.filter(t => t.type === 'PURCHASE').reduce((s, t) => s + (Number(t.quantity) || 0), 0));
+
+    const totalAvailableValue = round2(openingStockValue + purchasesValue);
+    const totalAvailableUnits = round3(openingStockUnits + purchasesUnits);
+
+    // Reconcile file rows against existing products
+    const matched = [];
+    const unmatched = [];
+    const matchedProductIds = new Set();
+
+    for (const row of parsed.rows) {
+      const match = existingByName.get(norm(row.name)) || (row.sku ? existingBySku.get(norm(row.sku)) : null);
+      if (match) {
+        matchedProductIds.add(match.id);
+        const currentStock = round3(Number(match.quantity) || 0);
+        const closingStock = round3(row.quantity);
+        const consumedStock = round3(Math.max(0, currentStock - closingStock));
+        matched.push({
+          productId: match.id,
+          name: match.name,
+          fileItemName: row.name,
+          category: row.category || match.category?.name || 'General',
+          unit: row.unit || match.unit || 'pcs',
+          currentStock,
+          closingStock,
+          difference: round3(closingStock - currentStock),
+          consumedStock,
+          rate: row.price > 0 ? row.price : (Number(match.costPrice) || Number(match.price) || 0),
+          closingValue: row.total,
+          sheet: row.sheet,
+        });
+      } else {
+        unmatched.push({
+          name: row.name,
+          category: row.category,
+          unit: row.unit,
+          closingStock: row.quantity,
+          rate: row.price,
+          closingValue: row.total,
+          sheet: row.sheet,
+        });
+      }
+    }
+
+    // Products currently in stock in DB that were NOT in the closing file
+    const unlistedProducts = existingProducts.filter(p => !matchedProductIds.has(p.id) && (Number(p.quantity) > 0)).map(p => ({
+      productId: p.id,
+      name: p.name,
+      category: p.category?.name || 'General',
+      currentStock: Number(p.quantity),
+      unit: p.unit || 'pcs',
+      rate: Number(p.costPrice || p.price || 0),
+      currentValue: round2(Number(p.quantity) * Number(p.costPrice || p.price || 0)),
+    }));
+
+    const closingStockValue = parsed.totalValue;
+    const closingStockUnits = parsed.totalQuantity;
+
+    // Formula: Inventory Consumed = Opening Stock + Purchases - Closing Stock
+    const consumedValue = round2(Math.max(0, totalAvailableValue - closingStockValue));
+    const consumedUnits = round3(Math.max(0, totalAvailableUnits - closingStockUnits));
+
+    // Check if closing record already exists for this month
+    const priorClosing = await prisma.monthClosing.findUnique({ where: { month } });
+
+    res.json({
+      month,
+      monthLabel: Acc.monthLabel(month),
+      fileName: req.file.originalname,
+      openingStockValue,
+      openingStockUnits,
+      purchasesValue,
+      purchasesUnits,
+      totalAvailableValue,
+      totalAvailableUnits,
+      closingStockValue,
+      closingStockUnits,
+      consumedValue,
+      consumedUnits,
+      matchedCount: matched.length,
+      unmatchedCount: unmatched.length,
+      unlistedCount: unlistedProducts.length,
+      duplicateCount: parsed.duplicateRows.length,
+      errorCount: parsed.errors.length,
+      duplicateRows: parsed.duplicateRows,
+      errors: parsed.errors,
+      matched: matched.slice(0, 300),
+      unmatched: unmatched.slice(0, 100),
+      unlistedProducts: unlistedProducts.slice(0, 100),
+      sheetNames: parsed.sheetNames,
+      alreadyReconciled: !!priorClosing,
+      priorClosing: priorClosing ? {
+        closingDate: priorClosing.closingDate,
+        closingStockValue: priorClosing.closingStockValue,
+        reconciledAt: priorClosing.reconciledAt,
+      } : null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Apply Month-End Closing Stock Reconciliation
+app.post('/api/closing-stock/reconcile', authenticateToken, isAdmin, uploadFile, async (req, res) => {
+  try {
+    const month = req.body.month;
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'Valid month (YYYY-MM) is required' });
+    }
+    if (!req.file) return res.status(400).json({ error: 'No closing file uploaded' });
+
+    const parsed = await parseClosingStockFile(req.file.buffer, req.file.originalname);
+    const existingProducts = await prisma.product.findMany({
+      select: { id: true, name: true, sku: true, quantity: true, price: true, costPrice: true, unit: true, categoryId: true, category: { select: { name: true } } }
+    });
+    const existingByName = new Map(existingProducts.map(p => [norm(p.name), p]));
+    const existingBySku = new Map(existingProducts.filter(p => p.sku).map(p => [norm(p.sku), p]));
+
+    const [y, m] = month.split('-').map(Number);
+    const startMonth = new Date(Date.UTC(y, m - 1, 1));
+    const endMonth = new Date(Date.UTC(y, m, 1));
+    const closingDate = new Date(Date.UTC(y, m, 0, 23, 59, 59));
+
+    const monthTx = await prisma.transaction.findMany({
+      where: {
+        createdAt: { gte: startMonth, lt: endMonth },
+        type: { in: ['OPENING_STOCK', 'PURCHASE'] }
+      }
+    });
+
+    const openingStockValue = round2(monthTx.filter(t => t.type === 'OPENING_STOCK').reduce((s, t) => s + (Number(t.total) || 0), 0));
+    const openingStockUnits = round3(monthTx.filter(t => t.type === 'OPENING_STOCK').reduce((s, t) => s + (Number(t.quantity) || 0), 0));
+    const purchasesValue = round2(monthTx.filter(t => t.type === 'PURCHASE').reduce((s, t) => s + (Number(t.total) || 0), 0));
+    const purchasesUnits = round3(monthTx.filter(t => t.type === 'PURCHASE').reduce((s, t) => s + (Number(t.quantity) || 0), 0));
+    const totalAvailableValue = round2(openingStockValue + purchasesValue);
+    const totalAvailableUnits = round3(openingStockUnits + purchasesUnits);
+
+    const closingStockValue = parsed.totalValue;
+    const closingStockUnits = parsed.totalQuantity;
+    const consumedValue = round2(Math.max(0, totalAvailableValue - closingStockValue));
+    const consumedUnits = round3(Math.max(0, totalAvailableUnits - closingStockUnits));
+
+    const createUnmatched = String(req.body.createUnmatched) === 'true';
+    const zeroUnlisted = String(req.body.zeroUnlisted) === 'true';
+
+    let matchedCount = 0;
+    let unmatchedCount = 0;
+    const reconciliationRows = [];
+
+    await prisma.$transaction(async (tx) => {
+      const matchedProductIds = new Set();
+
+      for (const row of parsed.rows) {
+        const match = existingByName.get(norm(row.name)) || (row.sku ? existingBySku.get(norm(row.sku)) : null);
+        if (match) {
+          matchedProductIds.add(match.id);
+          matchedCount++;
+          const currentStock = round3(Number(match.quantity) || 0);
+          const closingStock = round3(row.quantity);
+          const consumed = round3(Math.max(0, currentStock - closingStock));
+
+          // Update product inventory balance to reflect actual remaining closing stock
+          await tx.product.update({
+            where: { id: match.id },
+            data: {
+              quantity: closingStock,
+              price: row.price > 0 ? row.price : match.price,
+              costPrice: row.price > 0 ? row.price : match.costPrice,
+            }
+          });
+
+          reconciliationRows.push({
+            id: match.id,
+            name: match.name,
+            currentStock,
+            closingStock,
+            consumed,
+            rate: row.price > 0 ? row.price : (match.costPrice || match.price || 0),
+            closingValue: row.total,
+          });
+        } else {
+          unmatchedCount++;
+          if (createUnmatched) {
+            const p = await tx.product.create({
+              data: {
+                name: row.name,
+                quantity: row.quantity,
+                price: row.price,
+                costPrice: row.price,
+                unit: row.unit || 'pcs',
+                emoji: row.emoji || '📦',
+              }
+            });
+            matchedProductIds.add(p.id);
+            reconciliationRows.push({
+              id: p.id,
+              name: p.name,
+              currentStock: 0,
+              closingStock: row.quantity,
+              consumed: 0,
+              rate: row.price,
+              closingValue: row.total,
+              isNew: true,
+            });
+          }
+        }
+      }
+
+      if (zeroUnlisted) {
+        for (const p of existingProducts) {
+          if (!matchedProductIds.has(p.id) && Number(p.quantity) > 0) {
+            await tx.product.update({
+              where: { id: p.id },
+              data: { quantity: 0 }
+            });
+          }
+        }
+      }
+
+      // Upsert MonthClosing record
+      await tx.monthClosing.upsert({
+        where: { month },
+        create: {
+          month,
+          closingDate,
+          openingStockValue,
+          purchasesValue,
+          totalAvailableValue,
+          closingStockValue,
+          consumedValue,
+          openingStockUnits,
+          purchasesUnits,
+          closingStockUnits,
+          consumedUnits,
+          totalItems: parsed.rows.length,
+          matchedItems: matchedCount,
+          unmatchedItems: unmatchedCount,
+          fileName: req.file.originalname,
+          reconciledBy: req.user.id,
+          reconciledAt: new Date(),
+          details: JSON.stringify(reconciliationRows),
+        },
+        update: {
+          closingDate,
+          openingStockValue,
+          purchasesValue,
+          totalAvailableValue,
+          closingStockValue,
+          consumedValue,
+          openingStockUnits,
+          purchasesUnits,
+          closingStockUnits,
+          consumedUnits,
+          totalItems: parsed.rows.length,
+          matchedItems: matchedCount,
+          unmatchedItems: unmatchedCount,
+          fileName: req.file.originalname,
+          reconciledBy: req.user.id,
+          reconciledAt: new Date(),
+          details: JSON.stringify(reconciliationRows),
+        }
+      });
+
+      // Record reconciliation audit trail in Transaction (does not modify historical purchase records)
+      const auditProductId = existingProducts[0]?.id || 1;
+      await tx.transaction.create({
+        data: {
+          productId: auditProductId,
+          type: 'RECONCILIATION',
+          quantity: closingStockUnits,
+          total: closingStockValue,
+          userId: req.user.id,
+          createdAt: closingDate,
+          note: `Month-End Closing Reconciliation: ${month} (Closing: ₹${closingStockValue}, Consumed: ₹${consumedValue})`
+        }
+      });
+    }, { timeout: 120000, maxWait: 20000 });
+
+    res.json({
+      success: true,
+      month,
+      monthLabel: Acc.monthLabel(month),
+      openingStockValue,
+      purchasesValue,
+      totalAvailableValue,
+      closingStockValue,
+      consumedValue,
+      matchedCount,
+      unmatchedCount,
+      reconciledAt: new Date(),
+      // Explicit verification: no next month carry-forward
+      nextMonthCarryForward: false,
+      message: `Successfully reconciled ${Acc.monthLabel(month)} closing stock! Inventory balance updated to ₹${closingStockValue.toLocaleString('en-IN')}. Next month opening stock remains independent.`
+    });
+  } catch (err) {
+    console.error('Reconciliation failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a saved month-end closing reconciliation
+app.delete('/api/closing-stock/:month', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { month } = req.params;
+    await prisma.monthClosing.delete({ where: { month } });
+    res.json({ success: true, message: `Reconciliation for ${month} removed` });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -1225,13 +1644,14 @@ app.delete('/api/sales-bills/day/:date', authenticateToken, isAdmin, async (req,
 
 // --- ACCOUNTING DATA (shared by dashboard, P&L page, Expenses page and the Excel export) ---
 async function loadAccounting() {
-  const [expenses, dailySales, payroll, transactions] = await Promise.all([
+  const [expenses, dailySales, payroll, transactions, monthClosings] = await Promise.all([
     prisma.expense.findMany(),
     prisma.dailySales.findMany(),
     prisma.payroll.findMany(),
     prisma.transaction.findMany({ include: { product: true }, orderBy: { createdAt: 'desc' } }),
+    prisma.monthClosing.findMany({ orderBy: { month: 'desc' } }),
   ]);
-  return { expenses, dailySales, payroll, transactions };
+  return { expenses, dailySales, payroll, transactions, monthClosings };
 }
 // ?month=2026-09 -> that month, ?month=all -> all time, nothing -> the latest month that has sales
 function pickMonth(data, q) {
@@ -1271,7 +1691,13 @@ app.get('/api/accounts/daily-ledger', authenticateToken, isAdmin, async (req, re
       label: pnl.label,
       months: Acc.availableMonths(data).map(m => ({ key: m, label: Acc.monthLabel(m) })),
       totalSales: pnl.sales.total,
+      openingStock: pnl.openingStock,
+      totalPurchases: pnl.inventoryPurchases,
+      totalStockAvailable: pnl.totalStockAvailable,
+      closingStock: pnl.closingStock,
       totalInventory: pnl.cogs,
+      inventoryConsumed: pnl.inventoryConsumed,
+      isReconciled: pnl.isReconciled,
       grossProfit: pnl.grossProfit,
       grossMargin: pnl.grossMargin,
       salaryCost: pnl.salaryLine,
@@ -1297,8 +1723,13 @@ app.get('/api/reports/dashboard', authenticateToken, async (req, res) => {
       month, label: pnl.label,
       months: Acc.availableMonths(data).map(m => ({ key: m, label: Acc.monthLabel(m) })),
       totalSales: pnl.sales.total,
-      totalInventory: pnl.cogs,
+      openingStock: pnl.openingStock,
       totalPurchases: pnl.inventoryPurchases,
+      totalStockAvailable: pnl.totalStockAvailable,
+      closingStock: pnl.closingStock,
+      totalInventory: pnl.cogs,
+      inventoryConsumed: pnl.inventoryConsumed,
+      isReconciled: pnl.isReconciled,
       grossProfit: pnl.grossProfit,
       grossMargin: pnl.grossMargin,
       salaryCost: pnl.salaryLine,
@@ -1309,8 +1740,8 @@ app.get('/api/reports/dashboard', authenticateToken, async (req, res) => {
       foodCostPct: pnl.foodCostPct,
       salaryPct: pnl.salaryPct,
       byDay: pnl.byDay,
-      openingStockValue: products.reduce((sum, p) => sum + (p.openingStock * p.price), 0),
-      closingStockValue: products.reduce((sum, p) => sum + (p.quantity * p.price), 0),
+      openingStockValue: pnl.openingStock > 0 ? pnl.openingStock : products.reduce((sum, p) => sum + (p.openingStock * p.price), 0),
+      closingStockValue: pnl.closingStock > 0 ? pnl.closingStock : products.reduce((sum, p) => sum + (p.quantity * p.price), 0),
       monthly: Acc.monthlySeries(data, 6),
     });
   } catch (err) {
@@ -1321,16 +1752,17 @@ app.get('/api/reports/dashboard', authenticateToken, async (req, res) => {
 // --- EXPORT STATISTICS (multi-sheet Excel with native charts) ---
 app.get('/api/reports/export', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const [products, transactions, expenses, dailySales, payroll, vendorBills] = await Promise.all([
+    const [products, transactions, expenses, dailySales, payroll, vendorBills, monthClosings] = await Promise.all([
       prisma.product.findMany({ include: { category: true } }),
       prisma.transaction.findMany({ include: { product: true } }),
       prisma.expense.findMany(),
       prisma.dailySales.findMany(),
       prisma.payroll.findMany(),
       prisma.vendorBill.findMany(),
+      prisma.monthClosing.findMany({ orderBy: { month: 'desc' } }),
     ]);
-    const data = { products, transactions, expenses, dailySales, payroll, vendorBills };
-    const month = pickMonth({ expenses, dailySales, payroll }, req.query.month);
+    const data = { products, transactions, expenses, dailySales, payroll, vendorBills, monthClosings };
+    const month = pickMonth({ expenses, dailySales, payroll, monthClosings }, req.query.month);
     const buffer = await buildWorkbookBuffer(data, { month: month || 'all' });
     const label = (month ? Acc.monthLabel(month) : 'All_Months').replace(' ', '_');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

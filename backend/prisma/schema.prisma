@@ -173,3 +173,28 @@ model SalesBill {
   @@unique([billDate, billNo])
   @@index([billDate])
 }
+
+// Month-End Closing Stock reconciliation snapshot & history
+model MonthClosing {
+  id                  Int      @id @default(autoincrement())
+  month               String   @unique // e.g. "2026-10"
+  closingDate         DateTime
+  openingStockValue   Float    @default(0)
+  purchasesValue      Float    @default(0)
+  totalAvailableValue Float    @default(0)
+  closingStockValue   Float    @default(0)
+  consumedValue       Float    @default(0)
+  openingStockUnits   Float    @default(0)
+  purchasesUnits      Float    @default(0)
+  closingStockUnits   Float    @default(0)
+  consumedUnits       Float    @default(0)
+  totalItems          Int      @default(0)
+  matchedItems        Int      @default(0)
+  unmatchedItems      Int      @default(0)
+  fileName            String?
+  reconciledBy        Int?     // userId
+  reconciledAt        DateTime @default(now())
+  details             String?  // JSON text of reconciliation items
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}

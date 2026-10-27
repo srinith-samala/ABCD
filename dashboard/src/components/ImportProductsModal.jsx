@@ -36,6 +36,7 @@ const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractio
 export default function ImportProductsModal({ onClose, onDone, initialDate }) {
   const [step, setStep] = useState('pick'); // pick -> preview -> done
   const [file, setFile] = useState(null);
+  const [importType, setImportType] = useState('PURCHASE'); // 'PURCHASE' | 'OPENING_STOCK'
   const [billDate, setBillDate] = useState(() => {
     if (initialDate) return initialDate;
     // Default to Indian calendar date
@@ -66,6 +67,9 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
     const guessed = guessDateFromName(f.name);
     setDateFromName(guessed);
     if (guessed) setBillDate(guessed); // e.g. Bills_02_Oct_2026.xlsx -> 2 Oct 2026
+    if (/open|opening/i.test(f.name)) {
+      setImportType('OPENING_STOCK');
+    }
   };
 
   const send = async (preview) => {
@@ -77,6 +81,8 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
       fd.append('file', file);
       fd.append('preview', String(preview));
       fd.append('recordPurchase', String(recordPurchase));
+      fd.append('importType', importType);
+      fd.append('isOpeningStock', String(importType === 'OPENING_STOCK'));
       fd.append('billDate', billDate);
       if (customTotal) fd.append('customTotal', customTotal);
       if (allowDuplicate) fd.append('allowDuplicate', 'true');
@@ -107,18 +113,62 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
       <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 580, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div>
-            <h3 style={{ fontSize: 17, fontWeight: 700 }}>Import Stock / Daily Inventory Bill</h3>
-            <p style={{ fontSize: 12, color: '#8A94A6', marginTop: 2 }}>Upload supplier bill or stock Excel to log date-categorized inventory</p>
+            <h3 style={{ fontSize: 17, fontWeight: 700 }}>
+              {importType === 'OPENING_STOCK' ? '📦 Import Month Opening Stock' : '🛒 Import Stock / Daily Inventory Bill'}
+            </h3>
+            <p style={{ fontSize: 12, color: '#8A94A6', marginTop: 2 }}>
+              {importType === 'OPENING_STOCK'
+                ? 'Upload opening stock spreadsheet to add to inventory and establish month opening stock'
+                : 'Upload supplier bill or stock Excel to log date-categorized inventory'}
+            </p>
           </div>
           <button onClick={onClose} style={{ border: 'none', background: '#F4F5F7', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 15 }}>✕</button>
         </div>
 
         {step === 'pick' && (
           <>
+            {/* Choose Import Nature */}
+            <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+              <button
+                type="button"
+                onClick={() => setImportType('PURCHASE')}
+                style={{
+                  flex: 1, padding: '10px 12px', borderRadius: 10,
+                  border: `2px solid ${importType === 'PURCHASE' ? '#2ECC71' : '#E2E8F0'}`,
+                  background: importType === 'PURCHASE' ? '#F0FDF4' : '#fff',
+                  cursor: 'pointer', textAlign: 'left',
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700, color: importType === 'PURCHASE' ? '#166534' : '#0F1B2D' }}>
+                  🛒 Purchases / Daily Bill
+                </div>
+                <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+                  Records as purchase &amp; adds to stock
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setImportType('OPENING_STOCK')}
+                style={{
+                  flex: 1, padding: '10px 12px', borderRadius: 10,
+                  border: `2px solid ${importType === 'OPENING_STOCK' ? '#6C63FF' : '#E2E8F0'}`,
+                  background: importType === 'OPENING_STOCK' ? '#F5F3FF' : '#fff',
+                  cursor: 'pointer', textAlign: 'left',
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700, color: importType === 'OPENING_STOCK' ? '#5B21B6' : '#0F1B2D' }}>
+                  📦 Month Opening Stock
+                </div>
+                <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+                  Sets month opening &amp; adds to stock
+                </div>
+              </button>
+            </div>
+
             <div style={{ background: '#F4F7FB', borderRadius: 12, padding: '12px 16px', marginBottom: 16, border: '1px solid #E2E8F0' }}>
               <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#0F1B2D' }}>
-                  📅 Select Bill / Inventory Date:
+                  📅 {importType === 'OPENING_STOCK' ? 'Select Opening Stock Date:' : 'Select Bill / Inventory Date:'}
                 </span>
                 <input
                   type="date"
@@ -129,10 +179,16 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
               </label>
             </div>
 
+            {importType === 'OPENING_STOCK' && (
+              <p style={{ fontSize: 12, color: '#5B21B6', background: '#F5F3FF', border: '1px solid #DDD6FE', borderRadius: 8, padding: '8px 12px', marginBottom: 12 }}>
+                ℹ️ <b>Opening Stock:</b> This will add quantities to current inventory, preserve all existing purchase bills, and record as Opening Stock for <b>{billDate.slice(0, 7)}</b> in P&amp;L.
+              </p>
+            )}
+
             {file && dateFromName && <p style={{ fontSize: 12, color: '#166534', background: '#F0FDF4', borderRadius: 8, padding: '6px 10px', marginBottom: 10 }}>📅 Date taken from the file name: <b>{dateFromName}</b> (change it above if it is wrong).</p>}
             <p style={{ fontSize: 12.5, color: '#64748B', marginBottom: 14 }}>
-              Required column: <b>name</b>. Optional: quantity, price, unit, category, supplier, sku.
-              <br />Existing items get this file's quantity added to stock. All items will be categorized under <b>{billDate}</b> in Daily Inventory.
+              Required column: <b>name / item name</b>. Optional: quantity / stock in hand, price / mrp, unit, category.
+              <br />Multi-sheet workbooks (e.g. Kirana, Veg, Packing) are automatically processed!
             </p>
 
             <div
@@ -315,11 +371,22 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
               </p>
             )}
 
-            {/* Checkbox for recording as a dated bill */}
+            {data.duplicateOpeningStock && (
+              <div style={{ background: '#FEE2E2', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+                <p style={{ fontSize: 12.5, color: '#991B1B' }}>
+                  ⚠️ <b>Opening stock already exists for {data.duplicateOpeningStock.month}:</b> {inr(data.duplicateOpeningStock.total)} ({fmtQty(data.duplicateOpeningStock.units)} units) on {data.duplicateOpeningStock.date?.slice(0, 10)}. Importing again will add to inventory quantities and duplicate the opening stock value in P&amp;L.
+                </p>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, fontSize: 12.5, cursor: 'pointer', color: '#7F1D1D' }}>
+                  <input type="checkbox" checked={allowDuplicate} onChange={e => setAllowDuplicate(e.target.checked)} /> Import anyway
+                </label>
+              </div>
+            )}
+
+            {/* Checkbox for recording as a dated bill or opening stock */}
             <label style={{
               display: 'flex', gap: 12, alignItems: 'flex-start',
-              background: recordPurchase ? '#F0FDF4' : '#FAFBFC',
-              border: `1.5px solid ${recordPurchase ? '#86EFAC' : '#E2E8F0'}`,
+              background: recordPurchase ? (importType === 'OPENING_STOCK' ? '#F5F3FF' : '#F0FDF4') : '#FAFBFC',
+              border: `1.5px solid ${recordPurchase ? (importType === 'OPENING_STOCK' ? '#C4B5FD' : '#86EFAC') : '#E2E8F0'}`,
               borderRadius: 10, padding: '12px 14px', marginBottom: 14, cursor: 'pointer'
             }}>
               <input
@@ -329,9 +396,15 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
                 style={{ marginTop: 2, transform: 'scale(1.2)' }}
               />
               <span style={{ fontSize: 13 }}>
-                <b style={{ color: '#0F1B2D' }}>✓ Record as a Date-Categorized Inventory Bill for {billDate}</b>
+                <b style={{ color: importType === 'OPENING_STOCK' ? '#5B21B6' : '#0F1B2D' }}>
+                  {importType === 'OPENING_STOCK'
+                    ? `✓ Record as Opening Stock for ${billDate.slice(0, 7)}`
+                    : `✓ Record as a Date-Categorized Inventory Bill for ${billDate}`}
+                </b>
                 <span style={{ display: 'block', color: '#64748B', marginTop: 3, fontSize: 12 }}>
-                  This automatically categorizes this purchase under <b>{billDate}</b> in <b>📅 Daily Inventory</b> and deducts it in your <b>📊 Daily Profit &amp; Ledger</b>!
+                  {importType === 'OPENING_STOCK'
+                    ? `Adds quantities to existing inventory and logs opening stock for ${billDate.slice(0, 7)} in Monthly P&L.`
+                    : `This automatically categorizes this purchase under ${billDate} in 📅 Daily Inventory and deducts it in your 📊 Daily Profit & Ledger!`}
                 </span>
               </span>
             </label>
@@ -339,8 +412,12 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
             {error && <p style={{ background: '#FEE2E2', color: '#B91C1C', fontSize: 13, padding: '10px 12px', borderRadius: 10, marginBottom: 14 }}>{error}</p>}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button onClick={() => { setStep('pick'); setData(null); }} style={btn(false)}>Back</button>
-              <button onClick={() => send(false)} disabled={busy || nothingToDo || (recordPurchase && (data.duplicateBills || []).length > 0 && !allowDuplicate)} style={btn(true, busy || nothingToDo || (recordPurchase && (data.duplicateBills || []).length > 0 && !allowDuplicate))}>
-                {busy ? 'Saving...' : `Confirm & Log Inventory for ${billDate}`}
+              <button
+                onClick={() => send(false)}
+                disabled={busy || nothingToDo || (recordPurchase && (((data.duplicateBills || []).length > 0 && !allowDuplicate) || (data.duplicateOpeningStock && !allowDuplicate)))}
+                style={btn(true, busy || nothingToDo || (recordPurchase && (((data.duplicateBills || []).length > 0 && !allowDuplicate) || (data.duplicateOpeningStock && !allowDuplicate))))}
+              >
+                {busy ? 'Saving...' : importType === 'OPENING_STOCK' ? `Confirm & Log Opening Stock for ${billDate.slice(0, 7)}` : `Confirm & Log Inventory for ${billDate}`}
               </button>
             </div>
           </>
@@ -350,20 +427,26 @@ export default function ImportProductsModal({ onClose, onDone, initialDate }) {
           <>
             <div style={{ textAlign: 'center', padding: '16px 0' }}>
               <div style={{ fontSize: 42, marginBottom: 10 }}>🎉</div>
-              <h4 style={{ fontSize: 18, fontWeight: 800, color: '#0F1B2D' }}>Inventory Bill Successfully Logged!</h4>
+              <h4 style={{ fontSize: 18, fontWeight: 800, color: '#0F1B2D' }}>
+                {data.importType === 'OPENING_STOCK' ? 'Opening Stock Successfully Logged!' : 'Inventory Bill Successfully Logged!'}
+              </h4>
               <p style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>
-                Categorized under <b>{data.recordedDate || billDate}</b> with total quantity and cost.
+                {data.importType === 'OPENING_STOCK'
+                  ? <>Recorded as Month Opening Stock for <b>{data.recordedDate?.slice(0, 7) || billDate.slice(0, 7)}</b> with total quantity and value.</>
+                  : <>Categorized under <b>{data.recordedDate || billDate}</b> with total quantity and cost.</>}
               </p>
             </div>
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '14px 0', justifyContent: 'center' }}>
               {pill('#D6F5E3', '#16A34A', `✓ Items Updated: ${data.added + data.created}`)}
               {pill('#EEF0FF', '#6C63FF', `Total Units: ${fmtQty(data.recordedUnits || totalUnits)}`)}
-              {pill('#FEF3C7', '#92400E', `Total Cost: ${inr(data.recordedTotal || totalCost)}`)}
+              {pill('#FEF3C7', '#92400E', `Total Value: ${inr(data.recordedTotal || totalCost)}`)}
             </div>
 
             <p style={{ fontSize: 12.5, color: '#16A34A', background: '#F0FBF4', borderRadius: 10, padding: '10px 14px', marginBottom: 16, textAlign: 'center' }}>
-              ✓ Now visible under <b>📅 Daily Inventory</b> and reflecting in <b>📊 Daily Profit &amp; Ledger</b>!
+              {data.importType === 'OPENING_STOCK'
+                ? <>✓ Opening stock added to inventory balance and will appear in <b>📊 Monthly P&amp;L</b> under Opening Stock!</>
+                : <>✓ Now visible under <b>📅 Daily Inventory</b> and reflecting in <b>📊 Daily Profit &amp; Ledger</b>!</>}
             </p>
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>

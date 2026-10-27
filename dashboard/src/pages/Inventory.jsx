@@ -97,7 +97,7 @@ export default function Inventory() {
       if (resCat.ok) setCategories(['All', ...(await resCat.json()).map(c => c.name)]);
       if (resTrans.ok) {
         const txs = await resTrans.json();
-        setTransactions(txs.filter(t => t.type === 'PURCHASE'));
+        setTransactions(txs.filter(t => t.type === 'PURCHASE' || t.type === 'OPENING_STOCK'));
       }
     } catch (err) {
       console.error(err);

@@ -112,15 +112,15 @@ function emptyNote(ws, row, col, text) {
 
 // ============================================================================================
 async function buildWorkbookBuffer(data, opts = {}) {
-  const { products = [], transactions = [], expenses = [], dailySales = [], payroll = [], vendorBills = [] } = data;
+  const { products = [], transactions = [], expenses = [], dailySales = [], payroll = [], vendorBills = [], monthClosings = [] } = data;
   const { junkProducts, junkTx, ids: junkIds } = A.findImportJunk(products, transactions);
   const realProducts = products.filter(p => !junkIds.has(p.id));
   const realTx = transactions.filter(t => !junkIds.has(t.productId));
-  const months = A.availableMonths({ dailySales, expenses, payroll, transactions: realTx });
-  const focusMonth = opts.month === 'all' ? null : (opts.month && months.includes(opts.month) ? opts.month : A.defaultMonth({ dailySales, expenses, payroll, transactions: realTx }));
-  const focus = A.computePnL({ dailySales, expenses, payroll, transactions: realTx }, focusMonth);
+  const months = A.availableMonths({ dailySales, expenses, payroll, transactions: realTx, monthClosings });
+  const focusMonth = opts.month === 'all' ? null : (opts.month && months.includes(opts.month) ? opts.month : A.defaultMonth({ dailySales, expenses, payroll, transactions: realTx, monthClosings }));
+  const focus = A.computePnL({ dailySales, expenses, payroll, transactions: realTx, monthClosings }, focusMonth);
   const pnlMonths = months.slice(-12);
-  const pnlBy = Object.fromEntries(pnlMonths.map(m => [m, A.computePnL({ dailySales, expenses, payroll, transactions: realTx }, m)]));
+  const pnlBy = Object.fromEntries(pnlMonths.map(m => [m, A.computePnL({ dailySales, expenses, payroll, transactions: realTx, monthClosings }, m)]));
   const periodLabel = focusMonth ? A.monthLabel(focusMonth) : 'All months';
   const checks = A.dataChecks(data);
 
@@ -291,13 +291,13 @@ async function buildWorkbookBuffer(data, opts = {}) {
     const s4 = writeRow('zomato', 'Zomato sales', p => r2(p.sales.zomato));
     const tS = writeRow('sales', 'TOTAL SALES', p => r2(p.sales.total), { style: 'total', formula: (c) => `SUM(${c}${s1}:${c}${s4})` });
 
-    head('COST OF GOODS (Food & Packaging)');
+    head('COST OF GOODS (INVENTORY & CONSUMPTION)');
     const grp = (g) => (p) => r2((p.byGroup.find(x => x.group === g) || {}).amount || 0);
-    // when dated inventory bills exist for a month, they ARE the cost of goods (food/packaging payments are not added again)
-    const c1 = writeRow('food', 'Food, raw material & inventory purchases', (p) => (p.inventoryPurchases > 0 ? r2(p.cogs) : grp('Food')(p)));
-    const c2 = writeRow('pack', 'Containers & packaging', (p) => (p.inventoryPurchases > 0 ? 0 : grp('Packaging')(p)));
-    const tC = writeRow('cogs', 'TOTAL COST OF GOODS', p => r2(p.cogs), { style: 'total', formula: (c) => `SUM(${c}${c1}:${c}${c2})` });
-    const gP = writeRow('gross', 'GROSS PROFIT', p => r2(p.grossProfit), { style: 'total', formula: (c) => `${c}${tS}-${c}${tC}` });
+    const cOpen = writeRow('openStock', 'Opening Stock brought forward', p => r2(p.openingStock || 0));
+    const cPurch = writeRow('purch', 'Inventory Purchases', p => (p.inventoryPurchases > 0 || (p.openingStock || 0) > 0 ? r2(p.inventoryPurchases) : grp('Food')(p)));
+    const cClose = writeRow('closeStock', 'Less: Closing Stock', p => (p.closingStock > 0 ? -r2(p.closingStock) : 0));
+    const tC = writeRow('cogs', 'INVENTORY CONSUMED / COGS', p => r2(p.cogs), { style: 'total' });
+    const gP = writeRow('gross', 'GROSS PROFIT (Sales − Inventory Consumed)', p => r2(p.grossProfit), { style: 'total', formula: (c) => `${c}${tS}-${c}${tC}` });
 
     head('OPERATING EXPENSES');
     const o1 = writeRow('sal', 'Salaries & wages (payroll)', p => r2(p.salaryLine));

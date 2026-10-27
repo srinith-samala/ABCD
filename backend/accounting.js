@@ -95,12 +95,13 @@ function findImportJunk(products, transactions) {
 const COGS_GROUPS = ['Food', 'Packaging'];
 const OPEX_ORDER = ['Gas', 'Transport', 'Staff', 'Commission', 'Rent', 'Marketing', 'Utilities', 'Maintenance', 'General'];
 
-function availableMonths({ dailySales = [], expenses = [], payroll = [], transactions = [] }) {
+function availableMonths({ dailySales = [], expenses = [], payroll = [], transactions = [], monthClosings = [] }) {
   const set = new Set();
   dailySales.forEach(s => { const k = monthKey(s.date); if (k) set.add(k); });
   expenses.forEach(e => { const k = monthKey(e.expenseDate || e.createdAt); if (k) set.add(k); });
   payroll.forEach(p => { const k = monthKey(p.month); if (k) set.add(k); });
   transactions.forEach(t => { const k = monthKey(t.createdAt); if (k) set.add(k); });
+  (monthClosings || []).forEach(c => { if (c.month) set.add(c.month); });
   return [...set].sort();
 }
 
@@ -111,12 +112,14 @@ function defaultMonth(data) {
   const withSalesOrInv = new Set();
   (data.dailySales || []).forEach(s => { const k = monthKey(s.date); if (k) withSalesOrInv.add(k); });
   (data.transactions || []).forEach(t => { const k = monthKey(t.createdAt); if (k) withSalesOrInv.add(k); });
+  (data.monthClosings || []).forEach(c => { if (c.month) withSalesOrInv.add(c.month); });
   const candidates = months.filter(m => withSalesOrInv.has(m));
   return (candidates.length ? candidates : months).slice(-1)[0];
 }
 
-function computePnL(data, month) {
-  const { dailySales = [], expenses = [], payroll = [], transactions = [] } = data;
+function computePnL(data, monthParam) {
+  const month = monthParam || data.month || null;
+  const { dailySales = [], expenses = [], payroll = [], transactions = [], monthClosings = [] } = data;
   const inMonth = (d) => (month ? monthKey(d) === month : true);
 
   const sales = { cash: 0, card: 0, upi: 0, zomato: 0, total: 0, discount: 0 };
@@ -149,7 +152,29 @@ function computePnL(data, month) {
   });
   sales.total = round2(sales.cash + sales.card + sales.upi + sales.zomato);
 
-  // 2. Process purchase transactions (inventory brought)
+  // 2. Process stock & inventory transactions
+  // Opening stock (imported manually for this month)
+  const openingTx = transactions.filter(t => t.type === 'OPENING_STOCK' && inMonth(t.createdAt));
+  const openingStockTotal = round2(openingTx.reduce((sum, t) => sum + (Number(t.total) || 0), 0));
+  const openingStockUnits = round2(openingTx.reduce((sum, t) => sum + (Number(t.quantity) || 0), 0));
+
+  openingTx.forEach(t => {
+    const k = dayKey(t.createdAt);
+    const r = byDayMap.get(k) || { date: k, cash: 0, card: 0, upi: 0, zomato: 0, sales: 0, inventory: 0, inventoryUnits: 0, items: [] };
+    r.items.push({
+      id: t.id,
+      productName: (t.product?.name || 'Item') + ' (Opening Stock)',
+      quantity: t.quantity,
+      unit: t.product?.unit || 'pcs',
+      total: t.total,
+      price: t.product?.price || 0,
+      createdAt: t.createdAt,
+      type: 'OPENING_STOCK',
+    });
+    byDayMap.set(k, r);
+  });
+
+  // Purchases (inventory brought during the month)
   const purchaseTx = transactions.filter(t => t.type === 'PURCHASE' && inMonth(t.createdAt));
   const purchaseTotal = round2(purchaseTx.reduce((sum, t) => sum + (Number(t.total) || 0), 0));
   const purchaseUnits = round2(purchaseTx.reduce((sum, t) => sum + (Number(t.quantity) || 0), 0));
@@ -167,9 +192,20 @@ function computePnL(data, month) {
       total: t.total,
       price: t.product?.price || 0,
       createdAt: t.createdAt,
+      type: 'PURCHASE',
     });
     byDayMap.set(k, r);
   });
+
+  // Total stock available = Opening Stock + Purchases
+  const totalStockAvailable = round2(openingStockTotal + purchaseTotal);
+  const totalUnitsAvailable = round2(openingStockUnits + purchaseUnits);
+
+  // Month-end closing stock for this month
+  const closingRecord = month ? (monthClosings || []).find(c => c.month === month) : null;
+  const isReconciled = !!closingRecord;
+  const closingStockTotal = isReconciled ? round2(closingRecord.closingStockValue) : 0;
+  const closingStockUnits = isReconciled ? round2(closingRecord.closingStockUnits) : 0;
 
   // Calculate day-by-day profit & running accumulated totals
   let accSales = 0;
@@ -214,13 +250,23 @@ function computePnL(data, month) {
   const pay = payroll.filter(p => inMonth(p.month));
   const salaryCost = round2(pay.reduce((s, p) => s + p.netPay, 0));
 
-  // If purchase transactions are present, they are the primary inventory cost (COGS).
-  // If no transactions exist, fallback to Food & Packaging expenses.
+  // Inventory consumed / COGS calculation:
+  // Formula: Inventory Consumed = Opening Stock + Purchases - Closing Stock
+  // (Closing stock reduces inventory consumption expense; it is not an additional expense)
   const expenseFoodCost = COGS_GROUPS.reduce((s, g) => s + (groupTotals[g] || 0), 0);
-  const cogs = purchaseTotal > 0 ? purchaseTotal : expenseFoodCost;
+  let cogs = 0;
+  if (isReconciled) {
+    cogs = round2(totalStockAvailable - closingStockTotal);
+  } else if (totalStockAvailable > 0) {
+    cogs = totalStockAvailable;
+  } else {
+    cogs = expenseFoodCost;
+  }
+  const inventoryConsumed = cogs;
 
-  // Operating expenses (exclude COGS groups if purchaseTotal is used, to avoid double counting)
-  const opexExpenseRows = Object.keys(groupTotals).filter(g => purchaseTotal > 0 ? (!COGS_GROUPS.includes(g) && g !== 'Salary') : (!COGS_GROUPS.includes(g) && g !== 'Salary'));
+  // Operating expenses (exclude COGS groups if stock transactions are used, to avoid double counting)
+  const hasStockData = totalStockAvailable > 0 || isReconciled;
+  const opexExpenseRows = Object.keys(groupTotals).filter(g => hasStockData ? (!COGS_GROUPS.includes(g) && g !== 'Salary') : (!COGS_GROUPS.includes(g) && g !== 'Salary'));
   const staffExpenseSalary = groupTotals['Salary'] || 0; // manual "Salary" expense rows count with payroll
   const opexLines = [];
   const orderedGroups = [...OPEX_ORDER, ...opexExpenseRows.filter(g => !OPEX_ORDER.includes(g))];
@@ -229,9 +275,9 @@ function computePnL(data, month) {
   const salaryLine = round2(salaryCost + staffExpenseSalary);
   const opex = round2(otherExpenses + salaryLine);
 
-  const totalExpenses = round2(cogs + opex); // Inventory + Operating Overheads + Salaries
-  const grossProfit = round2(sales.total - cogs);
-  const netProfit = round2(grossProfit - opex); // Sales - Inventory - Salaries - Other Expenses
+  const totalExpenses = round2(cogs + opex); // Inventory Consumed + Operating Overheads + Salaries
+  const grossProfit = round2(sales.total - cogs); // Gross Profit = Sales - Inventory Consumed
+  const netProfit = round2(grossProfit - opex);   // Net Profit = Gross Profit - Payroll - Other Expenses
   const pct = (n) => (sales.total > 0 ? (n / sales.total) * 100 : 0);
 
   const byGroup = [
@@ -249,8 +295,28 @@ function computePnL(data, month) {
   return {
     month, label: month ? monthLabel(month) : 'All time',
     sales, byDay,
+    openingStock: openingStockTotal,
+    openingStockUnits,
     inventoryPurchases: purchaseTotal,
     inventoryUnits: purchaseUnits,
+    totalStockAvailable,
+    totalUnitsAvailable,
+    closingStock: closingStockTotal,
+    closingStockUnits,
+    inventoryConsumed,
+    isReconciled,
+    closingRecord: closingRecord ? {
+      id: closingRecord.id,
+      month: closingRecord.month,
+      closingDate: closingRecord.closingDate,
+      openingStockValue: closingRecord.openingStockValue,
+      purchasesValue: closingRecord.purchasesValue,
+      totalAvailableValue: closingRecord.totalAvailableValue,
+      closingStockValue: closingRecord.closingStockValue,
+      consumedValue: closingRecord.consumedValue,
+      fileName: closingRecord.fileName,
+      reconciledAt: closingRecord.reconciledAt,
+    } : null,
     cogs, grossProfit, opexLines, otherExpenses, salaryLine, salaryCost, opex,
     totalExpenses, netProfit,
     margin: pct(netProfit), grossMargin: pct(grossProfit), foodCostPct: pct(cogs), salaryPct: pct(salaryLine),

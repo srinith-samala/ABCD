@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
+import ClosingStock from './pages/ClosingStock';
 import Products from './pages/Products';
 import Categories from './pages/Categories';
 import Orders from './pages/Orders';
@@ -43,6 +44,7 @@ export default function App() {
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/inventory" element={<Inventory />} />
+            <Route path="/closing-stock" element={<ClosingStock />} />
             <Route path="/products" element={<Products />} />
             <Route path="/categories" element={<Categories />} />
             <Route path="/orders" element={<Orders />} />

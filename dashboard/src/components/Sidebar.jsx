@@ -4,6 +4,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 const baseNavItems = [
   { to: '/', label: 'Dashboard', emoji: '🏠', exact: true },
   { to: '/inventory', label: 'Inventory', emoji: '📦' },
+  { to: '/closing-stock', label: 'Month-End Closing Stock', emoji: '🏁' },
   { to: '/products', label: 'Products', emoji: '🏷️' },
   { to: '/categories', label: 'Categories', emoji: '🗂️' },
   { to: '/orders', label: 'Orders', emoji: '🛒' },

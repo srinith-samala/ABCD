@@ -6,11 +6,11 @@ const { getRelevantEmoji } = require('./emojiMap');
 const MAX_ROWS = 1000;
 
 const ALIASES = {
-  name: ['name', 'product', 'productname', 'item', 'itemname'],
-  category: ['category', 'cat', 'group', 'type'],
-  price: ['price', 'sellingprice', 'mrp', 'rate', 'unitprice', 'sp'],
-  quantity: ['quantity', 'qty', 'stock', 'openingstock', 'currentstock', 'closingstock', 'qtyreceived', 'quantityreceived', 'qtyordered', 'quantityordered', 'nos', 'units', 'weight'],
-  unit: ['unit', 'uom'],
+  name: ['name', 'product', 'productname', 'item', 'itemname', 'particulars', 'items'],
+  category: ['category', 'cat', 'group', 'type', 'department'],
+  price: ['price', 'sellingprice', 'mrp', 'rate', 'unitprice', 'sp', 'unitrate'],
+  quantity: ['quantity', 'qty', 'stock', 'openingstock', 'currentstock', 'closingstock', 'stockinhand', 'inhand', 'closing', 'opening', 'balancestock', 'stockbalance', 'qtyinhand', 'stockqty', 'qtyreceived', 'quantityreceived', 'qtyordered', 'quantityordered', 'nos', 'units', 'weight'],
+  unit: ['unit', 'uom', 'dispriction', 'units', 'measure'],
   reorderLevel: ['reorderlevel', 'reorder', 'minstock', 'minimumstock'],
   sku: ['sku', 'code', 'productcode', 'barcode'],
   emoji: ['emoji', 'icon'],
@@ -18,7 +18,7 @@ const ALIASES = {
   description: ['description', 'desc', 'notes'],
   supplier: ['supplier', 'suppliername', 'vendor'],
   // the amount the bill charges for the whole line (authoritative when present)
-  total: ['totalprice', 'total', 'totalamount', 'amount', 'linetotal', 'lineamount', 'billamount', 'netamount', 'amt', 'totalcost', 'itemtotal'],
+  total: ['totalprice', 'total', 'totalamount', 'amount', 'linetotal', 'lineamount', 'billamount', 'netamount', 'amt', 'totalcost', 'itemtotal', 'value', 'val', 'stockvalue', 'totalval', 'totalvalue'],
   // "Lalanji's - Bill 6893", "Bill No", "Invoice"
   billRef: ['bill', 'billno', 'billnumber', 'invoice', 'invoiceno', 'invoicenumber', 'billsupplier', 'supplierbill', 'billfrom'],
   date: ['date', 'billdate', 'purchasedate', 'orderdate', 'receiveddate'],
@@ -56,20 +56,21 @@ const toNumber = (s) => {
   return Number.isFinite(n) ? n : NaN;
 };
 
-// Returns { ws, ignoredSheets }. For .xlsx the sheet whose name matches `prefer` is used (else the first one).
+// Returns { ws, sheets, ignoredSheets }. For .xlsx returns all worksheets so multi-sheet workbooks can be parsed.
 async function loadSheet(buffer, filename, prefer) {
   const wb = new ExcelJS.Workbook();
   const lower = String(filename || '').toLowerCase();
   if (lower.endsWith('.csv')) {
     let buf = buffer;
     if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) buf = buf.subarray(3); // strip BOM
-    return { ws: await wb.csv.read(Readable.from(buf)), ignoredSheets: [] };
+    const ws = await wb.csv.read(Readable.from(buf));
+    return { ws, sheets: [ws], ignoredSheets: [] };
   }
   if (lower.endsWith('.xlsx')) {
     await wb.xlsx.load(buffer);
     const sheets = wb.worksheets;
     const ws = (prefer && sheets.find(w => prefer.test(w.name))) || sheets[0];
-    return { ws, ignoredSheets: sheets.filter(w => w !== ws).map(w => w.name) };
+    return { ws, sheets, ignoredSheets: sheets.filter(w => w !== ws).map(w => w.name) };
   }
   throw new Error('Unsupported file type. Please upload a .csv or .xlsx file');
 }
@@ -158,150 +159,303 @@ function inferTotalColumn(ws, headerRowNo, cols) {
 function colLetter(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
 
 async function parseProductsFile(buffer, filename) {
-  const { ws, ignoredSheets } = await loadSheet(buffer, filename, /inventory|product|stock|item/i);
+  const { ws, sheets, ignoredSheets } = await loadSheet(buffer, filename, /inventory|product|stock|item/i);
   if (!ws) throw new Error('The file has no data');
 
-  // find header row (within the first 10 rows) that has both name and price columns
-  let headerRowNo = 0;
-  let cols = {};
-  for (let r = 1; r <= Math.min(10, ws.rowCount); r++) {
-    const m = mapHeaders(ws.getRow(r).values);
-    if (m.name !== undefined) { headerRowNo = r; cols = m; break; }
+  // Check if multiple sheets contain product headers
+  const candidateSheets = [];
+  const notProductSheets = [];
+  for (const s of (sheets || [ws])) {
+    let hRow = 0;
+    let c = {};
+    for (let r = 1; r <= Math.min(10, s.rowCount); r++) {
+      const m = mapHeaders(s.getRow(r).values);
+      if (m.name !== undefined) { hRow = r; c = m; break; }
+    }
+    if (hRow > 0) {
+      candidateSheets.push({ ws: s, headerRowNo: hRow, cols: c });
+    } else {
+      notProductSheets.push(s.name);
+    }
   }
-  if (!headerRowNo) {
+
+  if (!candidateSheets.length) {
     throw new Error('Could not find the header row. The file needs at least a "name" column');
   }
+
   const notes = [];
-  if (cols.quantity === undefined) {
-    const guess = inferQuantityColumn(ws, headerRowNo, cols);
-    if (guess) {
-      cols.quantity = guess.c;
-      notes.push(guess.header
-        ? `The quantity column heading looked odd ("${guess.header}") - quantities were read from column ${colLetter(guess.c)}.`
-        : `No heading found for quantities - they were read from column ${colLetter(guess.c)}.`);
-    }
-  }
-  if (cols.total === undefined) {
-    const t = inferTotalColumn(ws, headerRowNo, cols);
-    if (t) {
-      cols.total = t.c;
-      notes.push(`The bill-amount column${t.header ? ` ("${t.header}")` : ''} was found from the numbers (column ${colLetter(t.c)}); its amounts are recorded exactly as written.`);
-    }
-  }
   let fileTotal = null;
   let subTotalSum = 0;
   let rowsWithoutTotal = 0;
+  let hasAnyTotalCol = false;
+  const rows = [];
+  const errors = [];
+
+  for (const { ws: currentWs, headerRowNo, cols } of candidateSheets) {
+    if (cols.quantity === undefined) {
+      const guess = inferQuantityColumn(currentWs, headerRowNo, cols);
+      if (guess) {
+        cols.quantity = guess.c;
+        notes.push(`[${currentWs.name}] ` + (guess.header
+          ? `The quantity column heading looked odd ("${guess.header}") - quantities were read from column ${colLetter(guess.c)}.`
+          : `No heading found for quantities - they were read from column ${colLetter(guess.c)}.`));
+      }
+    }
+    if (cols.total === undefined) {
+      const t = inferTotalColumn(currentWs, headerRowNo, cols);
+      if (t) {
+        cols.total = t.c;
+        notes.push(`[${currentWs.name}] The bill-amount column${t.header ? ` ("${t.header}")` : ''} was found from the numbers (column ${colLetter(t.c)}); its amounts are recorded exactly as written.`);
+      }
+    }
+    if (cols.total !== undefined) hasAnyTotalCol = true;
+
+    for (let r = headerRowNo + 1; r <= currentWs.rowCount; r++) {
+      const rowVals = currentWs.getRow(r).values;
+      const get = (f) => (cols[f] === undefined ? '' : cellText(rowVals[cols[f]]));
+      const name = get('name');
+      const priceRaw = get('price');
+      const totalRaw = get('total');
+      const qtyVal = get('quantity');
+      const catVal = get('category');
+
+      if (!name && !priceRaw && !qtyVal && !catVal && !totalRaw) continue; // blank line
+      if (!name && (qtyVal || priceRaw || totalRaw) && (SUMMARY_NAME.test(qtyVal) || SUMMARY_NAME.test(catVal))) continue;
+
+      // the "TOTAL" line some bills have at the bottom is not a product - it is kept to double-check our own sum
+      if ((SUMMARY_NAME.test(name) || (!name && totalRaw && !priceRaw && !qtyVal)) && totalRaw) {
+        const t = toNumber(totalRaw);
+        if (Number.isFinite(t)) {
+          if (/^sub\s*total/i.test(name)) subTotalSum = round2(subTotalSum + t); else fileTotal = round2((fileTotal || 0) + t);
+        }
+        continue;
+      }
+      if (SUMMARY_NAME.test(name)) continue;
+
+      if (rows.length + errors.length >= MAX_ROWS) {
+        throw new Error(`Too many rows. Maximum is ${MAX_ROWS} per upload`);
+      }
+      if (!name || name === '.') { errors.push({ sheet: currentWs.name, row: r, message: 'Missing product name' }); continue; }
+      if (name.length > 120) { errors.push({ sheet: currentWs.name, row: r, name, message: 'Name is too long (max 120 characters)' }); continue; }
+
+      const price = priceRaw === '' ? 0 : toNumber(priceRaw);
+      if (Number.isNaN(price) || price < 0) {
+        errors.push({ sheet: currentWs.name, row: r, name, message: `Invalid price "${priceRaw}"` });
+        continue;
+      }
+
+      let qtyRaw = qtyVal;
+      let qtyUnit = '';
+      if (qtyRaw !== '' && Number.isNaN(toNumber(qtyRaw))) {
+        // "7 packs", "2.5 kg" in one cell -> quantity 7 / 2.5 and the unit
+        const mq = /^\s*(\d[\d,]*\.?\d*)\s*([A-Za-z]+\.?)?\s*$/.exec(qtyRaw);
+        if (mq) { qtyRaw = mq[1]; qtyUnit = mq[2] || ''; }
+      }
+      const quantity = qtyRaw === '' ? 0 : toNumber(qtyRaw);
+      if (Number.isNaN(quantity) || quantity < 0) {
+        errors.push({ sheet: currentWs.name, row: r, name, message: `Invalid quantity "${qtyRaw}"` });
+        continue;
+      }
+
+      const reorderRaw = get('reorderLevel');
+      const reorderLevel = reorderRaw === '' ? 10 : toNumber(reorderRaw);
+      if (Number.isNaN(reorderLevel) || reorderLevel < 0) {
+        errors.push({ sheet: currentWs.name, row: r, name, message: `Invalid reorder level "${reorderRaw}"` });
+        continue;
+      }
+
+      let lineTotal = null;
+      if (totalRaw === '' && quantity > 0) rowsWithoutTotal++;
+      if (totalRaw !== '') {
+        lineTotal = toNumber(totalRaw);
+        if (Number.isNaN(lineTotal) || lineTotal < 0) { errors.push({ sheet: currentWs.name, row: r, name, message: `Invalid total price "${totalRaw}"` }); continue; }
+        lineTotal = round2(lineTotal);
+      }
+      const dateRaw = get('date');
+      const day = dayFromCell(dateRaw);
+      if (dateRaw && !day) { errors.push({ sheet: currentWs.name, row: r, name, message: `Invalid date "${dateRaw}" (use YYYY-MM-DD or DD/MM/YYYY)` }); continue; }
+
+      const billRef = get('billRef').slice(0, 120);
+      const split = splitBillRef(billRef);
+      let check = null;
+      if (lineTotal !== null && price > 0 && quantity > 0) {
+        const expected = quantity * price;
+        const ratio = lineTotal / expected;
+        if (ratio < 0.9 || ratio > 1.25) check = `Price x quantity = ${round2(expected)} but Total Price = ${lineTotal}; the Total Price is used.`;
+      }
+
+      const costRaw = get('costPrice');
+      const costPrice = costRaw === '' ? null : toNumber(costRaw);
+      if (costPrice !== null && (Number.isNaN(costPrice) || costPrice < 0)) {
+        errors.push({ sheet: currentWs.name, row: r, name, message: `Invalid buy price "${costRaw}"` });
+        continue;
+      }
+
+      const finalTotal = lineTotal !== null ? lineTotal : round2(quantity * price);
+      const unitPrice = price > 0 ? price : (quantity > 0 && lineTotal !== null ? round2(lineTotal / quantity) : 0);
+      const category = (get('category') || (candidateSheets.length > 1 ? currentWs.name : '')).slice(0, 60) || null;
+
+      rows.push({
+        rowNumber: r,
+        sheet: currentWs.name,
+        name,
+        category,
+        price: unitPrice,
+        lineTotal: finalTotal,
+        hasTotal: lineTotal !== null,
+        billRef: billRef || null,
+        billNo: split.billNo || null,
+        date: day || null,
+        check,
+        quantity: Math.round(quantity * 1000) / 1000,
+        unit: (get('unit') || qtyUnit).slice(0, 20) || 'pcs',
+        reorderLevel: Math.round(reorderLevel),
+        sku: get('sku').slice(0, 60) || null,
+        emoji: getRelevantEmoji(name, category, get('emoji').slice(0, 8)),
+        costPrice: costPrice !== null ? costPrice : (lineTotal !== null && quantity > 0 ? round2(lineTotal / quantity) : null),
+        description: get('description').slice(0, 500) || null,
+        supplier: (get('supplier') || split.supplier).slice(0, 80) || null,
+        supplierPhone: get('supplierPhone').slice(0, 80) || null,
+      });
+    }
+  }
+
+  const computedTotal = round2(rows.reduce((t, x) => t + (x.lineTotal || 0), 0));
+  const checks = rows.filter(x => x.check).map(x => ({ row: x.rowNumber, sheet: x.sheet, name: x.name, message: x.check }));
+  if (fileTotal === null && subTotalSum > 0) fileTotal = subTotalSum;
+  const amountSource = !hasAnyTotalCol ? 'calculated' : (rowsWithoutTotal > 0 ? 'mixed' : 'total-column');
+  return { rows, errors, ignoredSheets: notProductSheets, notes, fileTotal, computedTotal, checks, amountSource, rowsWithoutTotal, totalColumn: hasAnyTotalCol ? 'Yes' : null };
+}
+
+// Dedicated parser for Month-End Closing Stock Excel files across all worksheets
+async function parseClosingStockFile(buffer, filename) {
+  const { ws, sheets, ignoredSheets } = await loadSheet(buffer, filename, /closing|inventory|product|stock|item/i);
+  if (!ws) throw new Error('The file has no data');
+
+  const candidateSheets = [];
+  const notProductSheets = [];
+  for (const s of (sheets || [ws])) {
+    let hRow = 0;
+    let c = {};
+    for (let r = 1; r <= Math.min(10, s.rowCount); r++) {
+      const m = mapHeaders(s.getRow(r).values);
+      if (m.name !== undefined) { hRow = r; c = m; break; }
+    }
+    if (hRow > 0) {
+      candidateSheets.push({ ws: s, headerRowNo: hRow, cols: c });
+    } else {
+      notProductSheets.push(s.name);
+    }
+  }
+
+  if (!candidateSheets.length) {
+    throw new Error('Could not find product header row. The file needs at least an "Item Name" or "Product" column');
+  }
 
   const rows = [];
   const errors = [];
-  for (let r = headerRowNo + 1; r <= ws.rowCount; r++) {
-    const rowVals = ws.getRow(r).values;
-    const get = (f) => (cols[f] === undefined ? '' : cellText(rowVals[cols[f]]));
-    const name = get('name');
-    const priceRaw = get('price');
-    const totalRaw = get('total');
-    if (!name && !priceRaw && !get('quantity') && !get('category') && !totalRaw) continue; // blank line
+  const seenNames = new Map();
+  const duplicates = [];
 
-    // the "TOTAL" line some bills have at the bottom is not a product - it is kept to double-check our own sum
-    if ((SUMMARY_NAME.test(name) || (!name && totalRaw && !priceRaw && !get('quantity'))) && totalRaw) {
-      const t = toNumber(totalRaw);
-      if (Number.isFinite(t)) {
-        // "Sub total" lines (per bill) are added up; a "Total" / "Grand total" line is the final figure and replaces them
-        if (/^sub\s*total/i.test(name)) subTotalSum = round2(subTotalSum + t); else fileTotal = round2(t);
+  for (const { ws: currentWs, headerRowNo, cols } of candidateSheets) {
+    if (cols.quantity === undefined) {
+      const guess = inferQuantityColumn(currentWs, headerRowNo, cols);
+      if (guess) cols.quantity = guess.c;
+    }
+    if (cols.total === undefined) {
+      const t = inferTotalColumn(currentWs, headerRowNo, cols);
+      if (t) cols.total = t.c;
+    }
+
+    for (let r = headerRowNo + 1; r <= currentWs.rowCount; r++) {
+      const rowVals = currentWs.getRow(r).values;
+      const get = (f) => (cols[f] === undefined ? '' : cellText(rowVals[cols[f]]));
+      const name = get('name');
+      const priceRaw = get('price');
+      const totalRaw = get('total');
+      const qtyVal = get('quantity');
+      const catVal = get('category');
+
+      if (!name && !priceRaw && !qtyVal && !totalRaw && !catVal) continue; // blank line
+      if (!name && (qtyVal || priceRaw || totalRaw) && (SUMMARY_NAME.test(qtyVal) || SUMMARY_NAME.test(catVal))) continue;
+      if (SUMMARY_NAME.test(name) || name === '.') continue;
+
+      if (!name) {
+        errors.push({ sheet: currentWs.name, row: r, message: 'Missing product name' });
+        continue;
       }
-      continue;
-    }
-    if (SUMMARY_NAME.test(name)) continue;
+      if (name.length > 120) {
+        errors.push({ sheet: currentWs.name, row: r, name, message: 'Product name is too long (max 120 characters)' });
+        continue;
+      }
 
-    if (rows.length + errors.length >= MAX_ROWS) {
-      throw new Error(`Too many rows. Maximum is ${MAX_ROWS} per upload`);
-    }
-    if (!name) { errors.push({ row: r, message: 'Missing product name' }); continue; }
-    if (name.length > 120) { errors.push({ row: r, name, message: 'Name is too long (max 120 characters)' }); continue; }
+      const price = priceRaw === '' ? 0 : toNumber(priceRaw);
+      if (Number.isNaN(price) || price < 0) {
+        errors.push({ sheet: currentWs.name, row: r, name, message: `Invalid price/rate "${priceRaw}"` });
+        continue;
+      }
 
-    const price = priceRaw === '' ? 0 : toNumber(priceRaw);
-    if (Number.isNaN(price) || price < 0) {
-      errors.push({ row: r, name, message: `Invalid price "${priceRaw}"` });
-      continue;
-    }
+      let qtyRaw = qtyVal;
+      let qtyUnit = '';
+      if (qtyRaw !== '' && Number.isNaN(toNumber(qtyRaw))) {
+        const mq = /^\s*(\d[\d,]*\.?\d*)\s*([A-Za-z]+\.?)?\s*$/.exec(qtyRaw);
+        if (mq) { qtyRaw = mq[1]; qtyUnit = mq[2] || ''; }
+      }
+      const quantity = qtyRaw === '' ? 0 : toNumber(qtyRaw);
+      if (Number.isNaN(quantity) || quantity < 0) {
+        errors.push({ sheet: currentWs.name, row: r, name, message: `Invalid stock quantity "${qtyRaw}"` });
+        continue;
+      }
 
-    let qtyRaw = get('quantity');
-    let qtyUnit = '';
-    if (qtyRaw !== '' && Number.isNaN(toNumber(qtyRaw))) {
-      // "7 packs", "2.5 kg" in one cell -> quantity 7 / 2.5 and the unit
-      const mq = /^\s*(\d[\d,]*\.?\d*)\s*([A-Za-z]+\.?)?\s*$/.exec(qtyRaw);
-      if (mq) { qtyRaw = mq[1]; qtyUnit = mq[2] || ''; }
-    }
-    const quantity = qtyRaw === '' ? 0 : toNumber(qtyRaw);
-    if (Number.isNaN(quantity) || quantity < 0) {
-      errors.push({ row: r, name, message: `Invalid quantity "${qtyRaw}"` });
-      continue;
-    }
+      let lineTotal = null;
+      if (totalRaw !== '') {
+        lineTotal = toNumber(totalRaw);
+        if (Number.isNaN(lineTotal) || lineTotal < 0) {
+          errors.push({ sheet: currentWs.name, row: r, name, message: `Invalid total value "${totalRaw}"` });
+          continue;
+        }
+        lineTotal = round2(lineTotal);
+      }
+      const finalTotal = lineTotal !== null ? lineTotal : round2(quantity * price);
+      const unitPrice = price > 0 ? price : (quantity > 0 && lineTotal !== null ? round2(lineTotal / quantity) : 0);
+      const category = (get('category') || currentWs.name).slice(0, 60);
+      const unit = (get('unit') || qtyUnit).slice(0, 20) || 'pcs';
 
-    const reorderRaw = get('reorderLevel');
-    const reorderLevel = reorderRaw === '' ? 10 : toNumber(reorderRaw);
-    if (Number.isNaN(reorderLevel) || reorderLevel < 0) {
-      errors.push({ row: r, name, message: `Invalid reorder level "${reorderRaw}"` });
-      continue;
-    }
+      const normName = norm(name);
+      if (seenNames.has(normName)) {
+        duplicates.push({ name, sheet: currentWs.name, row: r, previousSheet: seenNames.get(normName).sheet, previousRow: seenNames.get(normName).row });
+      } else {
+        seenNames.set(normName, { sheet: currentWs.name, row: r });
+      }
 
-    let lineTotal = null;
-    if (totalRaw === '' && quantity > 0) rowsWithoutTotal++;
-    if (totalRaw !== '') {
-      lineTotal = toNumber(totalRaw);
-      if (Number.isNaN(lineTotal) || lineTotal < 0) { errors.push({ row: r, name, message: `Invalid total price "${totalRaw}"` }); continue; }
-      lineTotal = round2(lineTotal);
+      rows.push({
+        sheet: currentWs.name,
+        rowNumber: r,
+        name,
+        category,
+        unit,
+        price: unitPrice,
+        quantity: round3(quantity),
+        total: finalTotal,
+        sku: get('sku').slice(0, 60) || null,
+        emoji: getRelevantEmoji(name, category, get('emoji').slice(0, 8)),
+      });
     }
-    const dateRaw = get('date');
-    const day = dayFromCell(dateRaw);
-    if (dateRaw && !day) { errors.push({ row: r, name, message: `Invalid date "${dateRaw}" (use YYYY-MM-DD or DD/MM/YYYY)` }); continue; }
-
-    const billRef = get('billRef').slice(0, 120);
-    const split = splitBillRef(billRef);
-    let check = null;
-    if (lineTotal !== null && price > 0 && quantity > 0) {
-      const expected = quantity * price;
-      const ratio = lineTotal / expected;
-      if (ratio < 0.9 || ratio > 1.25) check = `Price x quantity = ${round2(expected)} but Total Price = ${lineTotal}; the Total Price is used.`;
-    }
-
-    const costRaw = get('costPrice');
-    const costPrice = costRaw === '' ? null : toNumber(costRaw);
-    if (costPrice !== null && (Number.isNaN(costPrice) || costPrice < 0)) {
-      errors.push({ row: r, name, message: `Invalid buy price "${costRaw}"` });
-      continue;
-    }
-
-    const finalTotal = lineTotal !== null ? lineTotal : round2(quantity * price);
-    const unitPrice = price > 0 ? price : (quantity > 0 && lineTotal !== null ? round2(lineTotal / quantity) : 0);
-    rows.push({
-      rowNumber: r,
-      name,
-      category: get('category').slice(0, 60) || null,
-      price: unitPrice,
-      lineTotal: finalTotal,
-      hasTotal: lineTotal !== null,
-      billRef: billRef || null,
-      billNo: split.billNo || null,
-      date: day || null,
-      check,
-      quantity: Math.round(quantity * 1000) / 1000,
-      unit: (get('unit') || qtyUnit).slice(0, 20) || 'pcs',
-      reorderLevel: Math.round(reorderLevel),
-      sku: get('sku').slice(0, 60) || null,
-      emoji: getRelevantEmoji(name, split.category || get('category'), get('emoji').slice(0, 8)),
-      costPrice: costPrice !== null ? costPrice : (lineTotal !== null && quantity > 0 ? round2(lineTotal / quantity) : null),
-      description: get('description').slice(0, 500) || null,
-      supplier: (get('supplier') || split.supplier).slice(0, 80) || null,
-      supplierPhone: get('supplierPhone').slice(0, 80) || null,
-    });
   }
-  const computedTotal = round2(rows.reduce((t, x) => t + (x.lineTotal || 0), 0));
-  const checks = rows.filter(x => x.check).map(x => ({ row: x.rowNumber, name: x.name, message: x.check }));
-  if (fileTotal === null && subTotalSum > 0) fileTotal = subTotalSum;
-  const hasTotalCol = cols.total !== undefined;
-  const amountSource = !hasTotalCol ? 'calculated' : (rowsWithoutTotal > 0 ? 'mixed' : 'total-column');
-  return { rows, errors, ignoredSheets, notes, fileTotal, computedTotal, checks, amountSource, rowsWithoutTotal, totalColumn: hasTotalCol ? colLetter(cols.total) : null };
+
+  const totalQuantity = round3(rows.reduce((sum, r) => sum + r.quantity, 0));
+  const totalValue = round2(rows.reduce((sum, r) => sum + r.total, 0));
+
+  return {
+    rows,
+    duplicateRows: duplicates,
+    errors,
+    ignoredSheets: notProductSheets,
+    sheetNames: candidateSheets.map(c => c.ws.name),
+    totalItems: rows.length,
+    totalQuantity,
+    totalValue,
+  };
 }
 
 // Identical lines (same product, same bill, same date) are combined. The same product on DIFFERENT bills stays separate,
@@ -355,4 +509,4 @@ function planImport(rows, existing) {
   return { toCreate, addUps, skipped };
 }
 
-module.exports = { parseProductsFile, planImport, mergeDuplicateRows, mergeByProduct, dayFromCell, splitBillRef, MAX_ROWS, loadSheet, cellText, mapHeaders, toNumber, norm };
+module.exports = { parseProductsFile, parseClosingStockFile, planImport, mergeDuplicateRows, mergeByProduct, dayFromCell, splitBillRef, MAX_ROWS, loadSheet, cellText, mapHeaders, toNumber, norm };
