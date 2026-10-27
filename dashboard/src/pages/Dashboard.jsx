@@ -122,9 +122,15 @@ export default function Dashboard() {
           )}
           {isAdmin() && (
             <KpiCard
-              label="Inventory Purchases"
-              value={inr(stats.totalInventory || stats.totalPurchases)}
-              sub="stock bought in bills"
+              label={stats.openingStock > 0 ? (stats.isReconciled ? "Inventory Consumed (COGS)" : "Total Inventory Available") : "Inventory Purchases"}
+              value={inr(stats.isReconciled ? stats.inventoryConsumed : (stats.totalStockAvailable || (stats.openingStock ? (stats.openingStock + stats.totalPurchases) : stats.totalPurchases)))}
+              sub={
+                stats.isReconciled
+                  ? `Available ${inr0(stats.totalStockAvailable)} − Closing ${inr0(stats.closingStock)}`
+                  : stats.openingStock > 0
+                    ? `${inr0(stats.openingStock)} opening + ${inr0(stats.totalPurchases)} purchases`
+                    : "stock bought in bills"
+              }
               valueColor="#F59E0B"
               icon="📦"
             />
@@ -158,12 +164,6 @@ export default function Dashboard() {
               icon="💰"
             />
           )}
-          <KpiCard
-            label="Closing Stock Value"
-            value={inr(stats.closingStockValue)}
-            sub="warehouse / kitchen stock value"
-            icon="🏷️"
-          />
         </div>
 
         {/* Charts: Toggle Daily Trend vs Last 6 Months */}

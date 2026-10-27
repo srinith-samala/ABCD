@@ -1740,8 +1740,8 @@ app.get('/api/reports/dashboard', authenticateToken, async (req, res) => {
       foodCostPct: pnl.foodCostPct,
       salaryPct: pnl.salaryPct,
       byDay: pnl.byDay,
-      openingStockValue: pnl.openingStock > 0 ? pnl.openingStock : products.reduce((sum, p) => sum + (p.openingStock * p.price), 0),
-      closingStockValue: pnl.closingStock > 0 ? pnl.closingStock : products.reduce((sum, p) => sum + (p.quantity * p.price), 0),
+      openingStockValue: pnl.openingStock || 0,
+      closingStockValue: pnl.closingStock || 0,
       monthly: Acc.monthlySeries(data, 6),
     });
   } catch (err) {
