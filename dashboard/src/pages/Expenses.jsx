@@ -5,6 +5,7 @@ import Header from '../components/Header';
 import Portal from '../components/Portal';
 import MonthPicker from '../components/MonthPicker';
 import RepairBanner from '../components/RepairBanner';
+import ImportExpensesModal from '../components/ImportExpensesModal';
 
 const GROUPS = ['Auto', 'Food', 'Packaging', 'Gas', 'Transport', 'Staff', 'Salary', 'Commission', 'Rent', 'Marketing', 'Utilities', 'Maintenance', 'Tax', 'General'];
 const PAYMENT_MODES = ['Cash', 'ICICI', 'SVC', 'Bank', 'UPI', 'Other'];
@@ -19,6 +20,7 @@ export default function Expenses() {
   const [month, setMonth] = useState(null); // null = let the server pick the latest month with data
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState('');

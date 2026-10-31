@@ -4,6 +4,7 @@ const multer = require('multer');
 const { parseProductsFile, parseClosingStockFile, planImport, mergeDuplicateRows, mergeByProduct, norm } = require('./importParser');
 const { parseOrdersFile } = require('./purchaseParser');
 const { parsePayrollFile } = require('./payrollParser');
+const { parseExpenseFile } = require('./expenseParser');
 const Acc = require('./accounting');
 const repair = require('./repair');
 const { parseSalesBillFile, looksLikeSalesSummary } = require('./salesBillParser');
@@ -1502,6 +1503,66 @@ app.delete('/api/expenses/:id', authenticateToken, isAdmin, async (req, res) => 
     await prisma.expense.delete({ where: { id: parseInt(req.params.id) } });
     res.json({ success: true });
   } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/expenses/import', authenticateToken, uploadFile, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Please choose a CSV, Excel (.xlsx/.xls) or PDF file' });
+    const isPreview = String(req.body.preview || req.query.preview) === 'true';
+    const fallbackDate = req.body.date || req.query.date || '';
+    const fallbackMode = req.body.paymentMode || req.query.paymentMode || 'Cash';
+
+    const parsed = await parseExpenseFile(req.file.buffer, req.file.originalname, {
+      date: fallbackDate,
+      paymentMode: fallbackMode,
+    });
+
+    if (!parsed.rows.length) {
+      return res.status(422).json({ error: 'No valid expense entries found in this file. Please ensure title and amount columns are present.' });
+    }
+
+    if (isPreview) {
+      return res.json({
+        preview: true,
+        fileName: req.file.originalname,
+        totalRows: parsed.summary.totalRows,
+        totalAmount: parsed.summary.totalAmount,
+        groups: parsed.summary.groups,
+        paymentModes: parsed.summary.paymentModes,
+        rows: parsed.rows.slice(0, 50),
+      });
+    }
+
+    // Insert into database
+    const created = await prisma.expense.createMany({
+      data: parsed.rows.map(r => ({
+        title: r.title,
+        amount: r.amount,
+        category: r.category || 'General',
+        paymentMode: r.paymentMode || 'Cash',
+        vendor: r.vendor || null,
+        group: r.group || 'General',
+        expenseDate: r.expenseDate || new Date(),
+      })),
+    });
+
+    try {
+      await prisma.notification.create({
+        data: {
+          message: `${req.user?.name || 'User'} imported ${created.count} expenses (Total ₹${parsed.summary.totalAmount.toLocaleString('en-IN')}) from ${req.file.originalname}`,
+        }
+      });
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      importedCount: created.count,
+      summary: parsed.summary,
+    });
+  } catch (err) {
+    console.error('Expense import error:', err);
     res.status(400).json({ error: err.message });
   }
 });
