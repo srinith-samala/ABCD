@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const { parseProductsFile, parseClosingStockFile, planImport, mergeDuplicateRows, mergeByProduct, norm } = require('./importParser');
 const { parseOrdersFile } = require('./purchaseParser');
+const { parsePayrollFile } = require('./payrollParser');
 const Acc = require('./accounting');
 const repair = require('./repair');
 const { parseSalesBillFile, looksLikeSalesSummary } = require('./salesBillParser');
@@ -1825,7 +1826,20 @@ app.post('/api/dailysales', authenticateToken, isAdmin, async (req, res) => {
 
 app.get('/api/payroll', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const payroll = await prisma.payroll.findMany({ orderBy: { month: 'desc' } });
+    const { month } = req.query;
+    let where = {};
+    if (month && month !== 'all') {
+      const m = /^(\d{4})-(\d{2})$/.exec(month);
+      if (m) {
+        where = {
+          month: {
+            gte: new Date(Date.UTC(+m[1], +m[2] - 1, 1)),
+            lt: new Date(Date.UTC(+m[1], +m[2], 1)),
+          }
+        };
+      }
+    }
+    const payroll = await prisma.payroll.findMany({ where, orderBy: { month: 'desc' } });
     res.json(payroll);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1845,6 +1859,86 @@ app.post('/api/payroll', authenticateToken, isAdmin, async (req, res) => {
     });
     res.json(pr);
   } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.put('/api/payroll/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { employeeName, month, presentDays, salary, advance, netPay } = req.body;
+    const pr = await prisma.payroll.update({
+      where: { id: parseInt(req.params.id) },
+      data: {
+        ...(employeeName ? { employeeName } : {}),
+        ...(month ? { month: new Date(month) } : {}),
+        ...(presentDays !== undefined ? { presentDays: parseFloat(presentDays) || 0 } : {}),
+        ...(salary !== undefined ? { salary: parseFloat(salary) || 0 } : {}),
+        ...(advance !== undefined ? { advance: parseFloat(advance) || 0 } : {}),
+        ...(netPay !== undefined ? { netPay: parseFloat(netPay) || 0 } : {}),
+      }
+    });
+    res.json(pr);
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.delete('/api/payroll/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    await prisma.payroll.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ message: 'Payroll entry deleted' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/payroll/import', authenticateToken, isAdmin, uploadFile, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Please choose an Excel (.xlsx) or CSV file' });
+    const isPreview = String(req.body.preview || req.query.preview) === 'true';
+    const fallbackMonth = req.body.month || req.query.month || '';
+
+    const parsed = await parsePayrollFile(req.file.buffer, req.file.originalname, fallbackMonth);
+    if (!parsed.rows.length) {
+      return res.status(422).json({ error: 'No valid payroll rows found in this file. Please ensure employee names and salary or present days are provided.' });
+    }
+
+    if (isPreview) {
+      return res.json({
+        preview: true,
+        fileName: req.file.originalname,
+        totalRows: parsed.summary.totalRows,
+        totalSalary: parsed.summary.totalSalary,
+        totalAdvance: parsed.summary.totalAdvance,
+        totalNetPay: parsed.summary.totalNetPay,
+        months: parsed.summary.months,
+        rows: parsed.rows.slice(0, 50),
+      });
+    }
+
+    // Insert into database
+    const created = await prisma.payroll.createMany({
+      data: parsed.rows.map(r => ({
+        employeeName: r.employeeName,
+        month: r.month,
+        presentDays: r.presentDays,
+        salary: r.salary,
+        advance: r.advance,
+        netPay: r.netPay,
+      })),
+    });
+
+    try {
+      await prisma.notification.create({
+        data: {
+          message: `${req.user?.name || 'Admin'} imported ${created.count} payroll records for ${parsed.summary.months.join(', ')}`,
+        }
+      });
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      importedCount: created.count,
+      summary: parsed.summary,
+    });
+  } catch (err) {
+    console.error('Payroll import error:', err);
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.get('/api/vendorbills', authenticateToken, isAdmin, async (req, res) => {

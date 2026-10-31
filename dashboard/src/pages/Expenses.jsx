@@ -234,7 +234,30 @@ export default function Expenses() {
       {form && (
         <Portal><div onClick={() => setForm(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,27,45,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 }}>
           <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 440, boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>{form.id ? 'Edit Expense' : 'Add Expense'}</h3>
+            <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 14 }}>{form.id ? 'Edit Expense' : 'Add Expense'}</h3>
+            {!form.id && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+                {[
+                  { l: '🏢 Rent', t: 'Rent', g: 'Rent' },
+                  { l: '⚡ Electricity', t: 'Electricity / Light Bill', g: 'Utilities' },
+                  { l: '💧 Water', t: 'Water Bill', g: 'Utilities' },
+                  { l: '🔧 Maintenance', t: 'Maintenance & Repairs', g: 'Maintenance' },
+                  { l: '✨ Misc', t: 'Miscellaneous', g: 'General' },
+                ].map(p => (
+                  <button
+                    key={p.l}
+                    type="button"
+                    onClick={() => setForm({ ...form, title: p.t, group: p.g, category: p.t })}
+                    style={{
+                      border: '1px solid #E8EAED', background: '#FAFBFC', borderRadius: 6,
+                      padding: '4px 8px', fontSize: 11.5, fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >
+                    {p.l}
+                  </button>
+                ))}
+              </div>
+            )}
             <div style={{ marginBottom: 14 }}>
               <label style={labelStyle}>Title *</label>
               <input style={inputStyle} placeholder="e.g. Gas cylinders, Chicken, Rent" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} autoFocus />
