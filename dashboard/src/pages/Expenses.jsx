@@ -102,7 +102,15 @@ export default function Expenses() {
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 20 }}>
           <MonthPicker months={pnl ? pnl.months : []} value={month} onChange={changeMonth} />
-          <button onClick={openAdd} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Expense</button>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              onClick={() => setImportOpen(true)}
+              style={{ padding: '9px 16px', borderRadius: 10, background: '#0F1B2D', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              📥 Import CSV / Excel / PDF
+            </button>
+            <button onClick={openAdd} style={{ padding: '9px 20px', borderRadius: 10, background: '#2ECC71', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add Expense</button>
+          </div>
         </div>
 
         {/* Profit / Loss banner - same numbers as the P&L page and the Excel export */}
@@ -300,6 +308,14 @@ export default function Expenses() {
             </div>
           </div>
         </div></Portal>
+      )}
+
+      {importOpen && (
+        <ImportExpensesModal
+          initialDate={new Date().toISOString().slice(0, 10)}
+          onClose={() => setImportOpen(false)}
+          onDone={() => { setImportOpen(false); reload(); }}
+        />
       )}
     </div>
   );
