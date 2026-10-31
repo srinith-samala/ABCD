@@ -7,7 +7,7 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "build": "prisma generate && cd ../dashboard && npm install && npm run build",
-    "postinstall": "prisma generate",
+    "postinstall": "prisma generate && cd ../dashboard && npm install && npm run build",
     "db:push": "prisma db push",
     "seed": "node seed.js"
   },
