@@ -59,10 +59,10 @@ export default function ProductSalesSummary() {
   const currentView = useMemo(() => {
     if (activeTab !== 'auto') return activeTab;
     if (data?.viewMode && data.viewMode !== 'none') return data.viewMode;
+    if (data?.hasOrderData) return 'orders';
     if (data?.hasPosData) return 'pos';
     if (data?.hasClosingData) return 'closing';
-    if (data?.hasOrderData) return 'orders';
-    return 'pos';
+    return 'orders';
   }, [activeTab, data]);
 
   // Determine active item list
@@ -225,6 +225,30 @@ export default function ProductSalesSummary() {
             border: '1px solid #E2E8F0'
           }}>
             <button
+              onClick={() => setActiveTab('orders')}
+              style={{
+                padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                fontFamily: 'inherit', fontSize: 12, fontWeight: 700,
+                background: currentView === 'orders' ? '#0F1B2D' : 'transparent',
+                color: currentView === 'orders' ? '#fff' : '#64748B',
+                boxShadow: currentView === 'orders' ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
+                display: 'flex', alignItems: 'center', gap: 6,
+                transition: 'all 0.15s'
+              }}
+            >
+              <span>📦 Product Orders</span>
+              {hasOrders && (
+                <span style={{
+                  fontSize: 10, padding: '1px 6px', borderRadius: 10,
+                  background: currentView === 'orders' ? '#16A34A' : '#CBD5E1',
+                  color: '#fff', fontWeight: 800
+                }}>
+                  {data.stockItems.length}
+                </span>
+              )}
+            </button>
+
+            <button
               onClick={() => setActiveTab('pos')}
               style={{
                 padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
@@ -260,7 +284,7 @@ export default function ProductSalesSummary() {
                 transition: 'all 0.15s'
               }}
             >
-              <span>📦 Raw Materials Consumed</span>
+              <span>🥕 Raw Materials Consumed</span>
               {hasClosing && (
                 <span style={{
                   fontSize: 10, padding: '1px 6px', borderRadius: 10,
@@ -271,30 +295,6 @@ export default function ProductSalesSummary() {
                 </span>
               )}
             </button>
-
-            {hasOrders && (
-              <button
-                onClick={() => setActiveTab('orders')}
-                style={{
-                  padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                  fontFamily: 'inherit', fontSize: 12, fontWeight: 700,
-                  background: currentView === 'orders' ? '#0F1B2D' : 'transparent',
-                  color: currentView === 'orders' ? '#fff' : '#64748B',
-                  boxShadow: currentView === 'orders' ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  transition: 'all 0.15s'
-                }}
-              >
-                <span>📋 Stock Orders</span>
-                <span style={{
-                  fontSize: 10, padding: '1px 6px', borderRadius: 10,
-                  background: currentView === 'orders' ? '#16A34A' : '#CBD5E1',
-                  color: '#fff', fontWeight: 800
-                }}>
-                  {data.stockItems.length}
-                </span>
-              </button>
-            )}
           </div>
 
           <button
@@ -535,7 +535,19 @@ export default function ProductSalesSummary() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontSize: 18 }}>{p.emoji || (currentView === 'closing' ? '🥕' : '🍽️')}</span>
                       <div>
-                        <div>{p.name}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <div>{p.name}</div>
+                          {currentView === 'orders' && p.type && (
+                            <span style={{
+                              fontSize: 10, padding: '1px 5px', borderRadius: 4,
+                              background: p.type === 'SALE' ? '#DCFCE7' : p.type === 'BOTH' ? '#FEF3C7' : '#EEF0FF',
+                              color: p.type === 'SALE' ? '#166534' : p.type === 'BOTH' ? '#92400E' : '#4338CA',
+                              fontWeight: 700
+                            }}>
+                              {p.type === 'SALE' ? 'Stock Out' : p.type === 'BOTH' ? 'In & Out' : 'Stock In'}
+                            </span>
+                          )}
+                        </div>
                         {p.sku && <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 400 }}>SKU: {p.sku}</div>}
                       </div>
                     </div>

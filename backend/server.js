@@ -1585,9 +1585,9 @@ app.get('/api/transactions/product-sales', authenticateToken, async (req, res) =
       pctOfTotal: closingTotalConsumed > 0 ? round2((p.totalRevenue / closingTotalConsumed) * 100) : 0,
     }));
 
-    // 3. Fetch Transaction SALE records for this month
-    const salesTx = await prisma.transaction.findMany({
-      where: { type: 'SALE', ...dateFilterTx },
+    // 3. Fetch all Transaction records for this month (both Stock In / Purchase and Stock Out / Sale)
+    const allTx = await prisma.transaction.findMany({
+      where: dateFilterTx,
       include: {
         product: {
           select: {
@@ -1599,14 +1599,26 @@ app.get('/api/transactions/product-sales', authenticateToken, async (req, res) =
       orderBy: { createdAt: 'desc' }
     });
 
+    // Filter strictly using Acc.monthKey to match Asia/Kolkata ledger
+    const monthTx = allTx.filter(tx => activeMonth === 'all' || Acc.monthKey(tx.createdAt) === activeMonth);
+
     const txMap = new Map();
     let txTotalRevenue = 0;
-    salesTx.forEach(tx => {
-      const pid = tx.productId;
+    let txTotalPurchases = 0;
+    let txTotalSales = 0;
+
+    monthTx.forEach(tx => {
+      const pid = tx.productId || tx.product?.name || `tx-${tx.id}`;
       const qty = Number(tx.quantity) || 0;
-      const rev = Number(tx.total) || 0;
-      txTotalRevenue += rev;
+      const tot = Number(tx.total) || 0;
       const prod = tx.product || {};
+      const isSale = tx.type === 'SALE';
+      const isPurchase = tx.type === 'PURCHASE' || tx.type === 'OPENING_STOCK';
+
+      if (isSale) txTotalSales += tot;
+      if (isPurchase) txTotalPurchases += tot;
+      txTotalRevenue += tot;
+
       const existing = txMap.get(pid) || {
         productId: pid,
         name: prod.name || 'Unknown Item',
@@ -1619,19 +1631,36 @@ app.get('/api/transactions/product-sales', authenticateToken, async (req, res) =
         costPrice: Number(prod.costPrice) || 0,
         quantitySold: 0,
         totalRevenue: 0,
+        totalPurchases: 0,
+        purchaseQty: 0,
+        totalSales: 0,
+        saleQty: 0,
         orderCount: 0,
+        type: tx.type,
         source: 'stock_order',
       };
+
       existing.quantitySold = round3(existing.quantitySold + qty);
-      existing.totalRevenue = round2(existing.totalRevenue + rev);
+      existing.totalRevenue = round2(existing.totalRevenue + tot);
+      if (isSale) {
+        existing.totalSales = round2(existing.totalSales + tot);
+        existing.saleQty = round3(existing.saleQty + qty);
+      }
+      if (isPurchase) {
+        existing.totalPurchases = round2(existing.totalPurchases + tot);
+        existing.purchaseQty = round3(existing.purchaseQty + qty);
+      }
       existing.orderCount += 1;
+      if (existing.totalPurchases > 0 && existing.totalSales > 0) {
+        existing.type = 'BOTH';
+      }
       txMap.set(pid, existing);
     });
 
     const txListRaw = Array.from(txMap.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
     const txList = txListRaw.map(p => ({
       ...p,
-      avgPrice: p.quantitySold > 0 ? round2(p.totalRevenue / p.quantitySold) : p.sellingPrice || 0,
+      avgPrice: p.quantitySold > 0 ? round2(p.totalRevenue / p.quantitySold) : (p.costPrice || p.sellingPrice || 0),
       pctOfTotal: txTotalRevenue > 0 ? round2((p.totalRevenue / txTotalRevenue) * 100) : 0,
     }));
 
@@ -1649,9 +1678,13 @@ app.get('/api/transactions/product-sales', authenticateToken, async (req, res) =
     // Determine primary display list:
     let displayList = [];
     let activeTotalRevenue = 0;
-    let viewMode = 'pos'; // 'pos' | 'closing' | 'orders'
+    let viewMode = 'orders'; // 'orders' | 'pos' | 'closing'
 
-    if (posList.length > 0) {
+    if (txList.length > 0) {
+      displayList = txList;
+      activeTotalRevenue = round2(txTotalRevenue);
+      viewMode = 'orders';
+    } else if (posList.length > 0) {
       displayList = posList;
       activeTotalRevenue = round2(posTotalRevenue);
       viewMode = 'pos';
@@ -1659,10 +1692,6 @@ app.get('/api/transactions/product-sales', authenticateToken, async (req, res) =
       displayList = closingItems;
       activeTotalRevenue = round2(closingTotalConsumed);
       viewMode = 'closing';
-    } else if (txList.length > 0) {
-      displayList = txList;
-      activeTotalRevenue = round2(txTotalRevenue);
-      viewMode = 'orders';
     }
 
     const topByRevenue = displayList.length ? displayList[0] : null;
@@ -1704,7 +1733,7 @@ app.get('/api/transactions/product-sales', authenticateToken, async (req, res) =
       summary: {
         totalRevenue: activeTotalRevenue,
         totalUnits: displayList.reduce((s, p) => s + (p.quantitySold || 1), 0),
-        totalOrders: viewMode === 'pos' ? reports.length : (viewMode === 'orders' ? salesTx.length : displayList.length),
+        totalOrders: viewMode === 'pos' ? reports.length : (viewMode === 'orders' ? monthTx.length : displayList.length),
         uniqueProductsSold: displayList.length,
         topByRevenue: topByRevenue ? { name: topByRevenue.name, revenue: topByRevenue.totalRevenue } : null,
         topByQuantity: topByQuantity ? { name: topByQuantity.name, units: topByQuantity.quantitySold, unit: topByQuantity.unit } : null,
