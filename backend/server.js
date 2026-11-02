@@ -742,9 +742,16 @@ app.post('/api/closing-stock/preview', authenticateToken, uploadFile, async (req
       errorCount: parsed.errors.length,
       duplicateRows: parsed.duplicateRows,
       errors: parsed.errors,
+      items: [
+        ...matched.map(m => ({ ...m, isMatched: true, stockChange: m.difference })),
+        ...unmatched.map(u => ({ ...u, isMatched: false, currentStock: 0, stockChange: u.closingStock }))
+      ],
+      totalRows: matched.length + unmatched.length,
       matched: matched.slice(0, 300),
       unmatched: unmatched.slice(0, 100),
+      unmatchedInFile: unmatched,
       unlistedProducts: unlistedProducts.slice(0, 100),
+      unlistedInSystem: unlistedProducts,
       sheetNames: parsed.sheetNames,
       alreadyReconciled: !!priorClosing,
       priorClosing: priorClosing ? {
@@ -766,9 +773,31 @@ app.post('/api/closing-stock/reconcile', authenticateToken, isAdmin, uploadFile,
     if (!month || !/^\d{4}-\d{2}$/.test(month)) {
       return res.status(400).json({ error: 'Valid month (YYYY-MM) is required' });
     }
-    if (!req.file) return res.status(400).json({ error: 'No closing file uploaded' });
 
-    const parsed = await parseClosingStockFile(req.file.buffer, req.file.originalname);
+    let parsedRows = [];
+    let closingStockValue = 0;
+    let closingStockUnits = 0;
+
+    if (req.file) {
+      const parsed = await parseClosingStockFile(req.file.buffer, req.file.originalname);
+      parsedRows = parsed.rows;
+      closingStockValue = parsed.totalValue;
+      closingStockUnits = parsed.totalQuantity;
+    } else if (req.body.items && Array.isArray(req.body.items) && req.body.items.length > 0) {
+      parsedRows = req.body.items.map(it => ({
+        name: it.name || it.fileItemName,
+        quantity: Number(it.closingStock) || 0,
+        price: Number(it.rate) || 0,
+        total: Number(it.closingValue) || ((Number(it.closingStock) || 0) * (Number(it.rate) || 0)),
+        unit: it.unit,
+        category: it.category,
+      }));
+      closingStockValue = round2(parsedRows.reduce((s, r) => s + r.total, 0));
+      closingStockUnits = round3(parsedRows.reduce((s, r) => s + r.quantity, 0));
+    } else {
+      return res.status(400).json({ error: 'No closing file uploaded or items provided' });
+    }
+
     const existingProducts = await prisma.product.findMany({
       select: { id: true, name: true, sku: true, quantity: true, price: true, costPrice: true, unit: true, categoryId: true, category: { select: { name: true } } }
     });
@@ -794,8 +823,6 @@ app.post('/api/closing-stock/reconcile', authenticateToken, isAdmin, uploadFile,
     const totalAvailableValue = round2(openingStockValue + purchasesValue);
     const totalAvailableUnits = round3(openingStockUnits + purchasesUnits);
 
-    const closingStockValue = parsed.totalValue;
-    const closingStockUnits = parsed.totalQuantity;
     const consumedValue = round2(Math.max(0, totalAvailableValue - closingStockValue));
     const consumedUnits = round3(Math.max(0, totalAvailableUnits - closingStockUnits));
 
@@ -809,7 +836,7 @@ app.post('/api/closing-stock/reconcile', authenticateToken, isAdmin, uploadFile,
     await prisma.$transaction(async (tx) => {
       const matchedProductIds = new Set();
 
-      for (const row of parsed.rows) {
+      for (const row of parsedRows) {
         const match = existingByName.get(norm(row.name)) || (row.sku ? existingBySku.get(norm(row.sku)) : null);
         if (match) {
           matchedProductIds.add(match.id);
@@ -891,10 +918,10 @@ app.post('/api/closing-stock/reconcile', authenticateToken, isAdmin, uploadFile,
           purchasesUnits,
           closingStockUnits,
           consumedUnits,
-          totalItems: parsed.rows.length,
+          totalItems: parsedRows.length,
           matchedItems: matchedCount,
           unmatchedItems: unmatchedCount,
-          fileName: req.file.originalname,
+          fileName: req.file ? req.file.originalname : (req.body.fileName || 'Closing Stock'),
           reconciledBy: req.user.id,
           reconciledAt: new Date(),
           details: JSON.stringify(reconciliationRows),
@@ -910,10 +937,10 @@ app.post('/api/closing-stock/reconcile', authenticateToken, isAdmin, uploadFile,
           purchasesUnits,
           closingStockUnits,
           consumedUnits,
-          totalItems: parsed.rows.length,
+          totalItems: parsedRows.length,
           matchedItems: matchedCount,
           unmatchedItems: unmatchedCount,
-          fileName: req.file.originalname,
+          fileName: req.file ? req.file.originalname : (req.body.fileName || 'Closing Stock'),
           reconciledBy: req.user.id,
           reconciledAt: new Date(),
           details: JSON.stringify(reconciliationRows),
@@ -1428,6 +1455,180 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
     const transactions = await prisma.transaction.findMany({ include: { product: true }, orderBy: { createdAt: 'desc' } });
     res.json(transactions);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- PRODUCT-WISE MONTHLY SALES SUMMARY ---
+app.get('/api/transactions/product-sales', authenticateToken, async (req, res) => {
+  try {
+    const qMonth = req.query.month; // e.g. "2026-10" or "all"
+
+    // Fetch all products with category
+    const products = await prisma.product.findMany({
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        unit: true,
+        emoji: true,
+        price: true,
+        costPrice: true,
+        quantity: true,
+        categoryId: true,
+        category: { select: { id: true, name: true } }
+      }
+    });
+
+    // Date range filter if specific month
+    let dateFilter = {};
+    if (qMonth && qMonth !== 'all' && /^\d{4}-\d{2}$/.test(qMonth)) {
+      const [y, m] = qMonth.split('-').map(Number);
+      const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
+      const end = new Date(Date.UTC(y, m, 1, 0, 0, 0));
+      dateFilter = { createdAt: { gte: start, lt: end } };
+    }
+
+    // Fetch all SALE transactions
+    const sales = await prisma.transaction.findMany({
+      where: {
+        type: 'SALE',
+        ...dateFilter
+      },
+      include: {
+        product: {
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            unit: true,
+            emoji: true,
+            price: true,
+            costPrice: true,
+            quantity: true,
+            category: { select: { name: true } }
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Get all distinct available months from all transactions
+    const allTxDates = await prisma.transaction.findMany({
+      where: { type: 'SALE' },
+      select: { createdAt: true },
+      distinct: ['createdAt'],
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const monthSet = new Set();
+    allTxDates.forEach(t => {
+      const d = new Date(t.createdAt);
+      if (!isNaN(d.getTime())) {
+        monthSet.add(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+      }
+    });
+
+    // Also include current & recent months so dropdown is never blank
+    const now = new Date();
+    monthSet.add(`${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`);
+    const lastM = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+    monthSet.add(`${lastM.getUTCFullYear()}-${String(lastM.getUTCMonth() + 1).padStart(2, '0')}`);
+
+    const availableMonths = Array.from(monthSet).sort().reverse();
+    const activeMonth = qMonth && (qMonth === 'all' || availableMonths.includes(qMonth))
+      ? qMonth
+      : (availableMonths[0] || `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`);
+
+    // Aggregate by productId
+    const productSalesMap = new Map();
+    let totalRevenue = 0;
+    let totalUnits = 0;
+
+    sales.forEach(tx => {
+      const pid = tx.productId;
+      const qty = Number(tx.quantity) || 0;
+      const rev = Number(tx.total) || 0;
+
+      totalRevenue += rev;
+      totalUnits += qty;
+
+      if (!productSalesMap.has(pid)) {
+        const prod = tx.product || products.find(p => p.id === pid) || {};
+        productSalesMap.set(pid, {
+          productId: pid,
+          name: prod.name || 'Unknown Item',
+          sku: prod.sku || '',
+          category: prod.category?.name || 'General',
+          unit: prod.unit || 'pcs',
+          emoji: prod.emoji || '📦',
+          currentStock: Number(prod.quantity) || 0,
+          sellingPrice: Number(prod.price) || 0,
+          costPrice: Number(prod.costPrice) || 0,
+          quantitySold: 0,
+          totalRevenue: 0,
+          orderCount: 0,
+        });
+      }
+
+      const rec = productSalesMap.get(pid);
+      rec.quantitySold = round3(rec.quantitySold + qty);
+      rec.totalRevenue = round2(rec.totalRevenue + rev);
+      rec.orderCount += 1;
+    });
+
+    const productSalesList = Array.from(productSalesMap.values()).map(p => {
+      const avgPrice = p.quantitySold > 0 ? round2(p.totalRevenue / p.quantitySold) : p.sellingPrice;
+      const pctOfTotal = totalRevenue > 0 ? round2((p.totalRevenue / totalRevenue) * 100) : 0;
+      const estimatedCogs = round2(p.quantitySold * p.costPrice);
+      const estimatedProfit = p.costPrice > 0 ? round2(p.totalRevenue - estimatedCogs) : null;
+      return {
+        ...p,
+        avgPrice,
+        pctOfTotal,
+        estimatedProfit,
+      };
+    }).sort((a, b) => b.totalRevenue - a.totalRevenue);
+
+    const topByRevenue = productSalesList.length ? productSalesList[0] : null;
+    const topByQuantity = productSalesList.length
+      ? [...productSalesList].sort((a, b) => b.quantitySold - a.quantitySold)[0]
+      : null;
+
+    // Category breakdown
+    const catMap = new Map();
+    productSalesList.forEach(p => {
+      const cat = p.category || 'General';
+      const c = catMap.get(cat) || { category: cat, revenue: 0, units: 0, productCount: 0 };
+      c.revenue = round2(c.revenue + p.totalRevenue);
+      c.units = round3(c.units + p.quantitySold);
+      c.productCount += 1;
+      catMap.set(cat, c);
+    });
+    const categoryBreakdown = Array.from(catMap.values())
+      .map(c => ({
+        ...c,
+        pct: totalRevenue > 0 ? round2((c.revenue / totalRevenue) * 100) : 0
+      }))
+      .sort((a, b) => b.revenue - a.revenue);
+
+    res.json({
+      month: activeMonth,
+      monthLabel: activeMonth === 'all' ? 'All Time' : Acc.monthLabel(activeMonth),
+      availableMonths: availableMonths.map(m => ({ key: m, label: Acc.monthLabel(m) })),
+      summary: {
+        totalRevenue: round2(totalRevenue),
+        totalUnits: round3(totalUnits),
+        totalOrders: sales.length,
+        uniqueProductsSold: productSalesList.length,
+        topByRevenue: topByRevenue ? { name: topByRevenue.name, revenue: topByRevenue.totalRevenue } : null,
+        topByQuantity: topByQuantity ? { name: topByQuantity.name, units: topByQuantity.quantitySold, unit: topByQuantity.unit } : null,
+      },
+      categoryBreakdown,
+      products: productSalesList,
+    });
+  } catch (err) {
+    console.error('Error in /api/transactions/product-sales:', err);
     res.status(500).json({ error: err.message });
   }
 });

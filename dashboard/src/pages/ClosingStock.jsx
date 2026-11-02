@@ -59,11 +59,32 @@ export default function ClosingStock() {
   // Current month's saved closing record if any
   const currentClosing = closings.find((c) => c.month === selectedMonth);
 
+  const detectMonthFromFilename = (name) => {
+    if (!name) return null;
+    const m1 = name.match(/(\d{1,2})[-_.](\d{1,2})[-_.](\d{4})/);
+    if (m1) {
+      const month = m1[2].padStart(2, '0');
+      const year = m1[3];
+      return `${year}-${month}`;
+    }
+    const m2 = name.match(/(\d{4})[-_.](\d{1,2})/);
+    if (m2) {
+      const year = m2[1];
+      const month = m2[2].padStart(2, '0');
+      return `${year}-${month}`;
+    }
+    return null;
+  };
+
   const handleFileSelect = (f) => {
     if (!f) return;
     setFile(f);
     setError('');
     setPreview(null);
+    const autoM = detectMonthFromFilename(f.name);
+    if (autoM) {
+      setSelectedMonth(autoM);
+    }
   };
 
   const handleGeneratePreview = async (e) => {
@@ -101,29 +122,44 @@ export default function ClosingStock() {
     setBusy(true);
     setError('');
     try {
-      const headers = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${localStorage.getItem('token')}`,
-      };
-      const res = await fetch(`${API}/api/closing-stock/reconcile`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          month: preview.month,
-          fileName: preview.fileName,
-          closingDate: `${preview.month}-28`,
-          openingStockValue: preview.openingStockValue,
-          purchasesValue: preview.purchasesValue,
-          totalAvailableValue: preview.totalAvailableValue,
-          closingStockValue: preview.closingStockValue,
-          consumedValue: preview.consumedValue,
-          items: preview.items,
-          unmatchedInFile: preview.unmatchedInFile,
-          unlistedInSystem: preview.unlistedInSystem,
-          createUnmatched,
-          zeroUnlisted,
-        }),
-      });
+      let res;
+      if (file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('month', preview.month);
+        formData.append('createUnmatched', String(createUnmatched));
+        formData.append('zeroUnlisted', String(zeroUnlisted));
+
+        res = await fetch(`${API}/api/closing-stock/reconcile`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+          body: formData,
+        });
+      } else {
+        const headers = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        };
+        res = await fetch(`${API}/api/closing-stock/reconcile`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            month: preview.month,
+            fileName: preview.fileName,
+            closingDate: `${preview.month}-28`,
+            openingStockValue: preview.openingStockValue,
+            purchasesValue: preview.purchasesValue,
+            totalAvailableValue: preview.totalAvailableValue,
+            closingStockValue: preview.closingStockValue,
+            consumedValue: preview.consumedValue,
+            items: preview.items,
+            unmatchedInFile: preview.unmatchedInFile,
+            unlistedInSystem: preview.unlistedInSystem,
+            createUnmatched,
+            zeroUnlisted,
+          }),
+        });
+      }
 
       const data = await res.json();
       if (!res.ok) {
@@ -606,9 +642,9 @@ export default function ClosingStock() {
             <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
               <div style={{ display: 'flex', gap: 6 }}>
                 {[
-                  ['all', `All Items (${preview.items.length})`],
-                  ['matched', `Matched (${preview.matchedCount})`],
-                  ['unmatched', `Unmatched (${preview.unmatchedCount})`],
+                  ['all', `All Items (${(preview.items || []).length})`],
+                  ['matched', `Matched (${preview.matchedCount || 0})`],
+                  ['unmatched', `Unmatched (${preview.unmatchedCount || 0})`],
                 ].map(([tabKey, label]) => (
                   <button
                     key={tabKey}

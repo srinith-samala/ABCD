@@ -3,6 +3,7 @@ import { API } from '../config';
 import Header from '../components/Header';
 import ImportOrdersModal from '../components/ImportOrdersModal';
 import SalesBills, { OrdersTabs } from './SalesBills';
+import ProductSalesSummary from '../components/ProductSalesSummary';
 import MonthPicker from '../components/MonthPicker';
 import { fmtQty } from '../utils';
 import Portal from '../components/Portal';
@@ -570,6 +571,11 @@ export default function Orders() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* ===================== TAB 3: PRODUCT-WISE MONTHLY SALES ===================== */}
+        {section === 'products' && (
+          <ProductSalesSummary />
         )}
 
         {/* MODAL: Add Order with Date & Exact Bill Total */}

@@ -380,6 +380,7 @@ async function parseClosingStockFile(buffer, filename) {
       if (!name && (qtyVal || priceRaw || totalRaw) && (SUMMARY_NAME.test(qtyVal) || SUMMARY_NAME.test(catVal))) continue;
       if (SUMMARY_NAME.test(name) || name === '.') continue;
 
+      if (!name && !qtyVal && !priceRaw) continue;
       if (!name) {
         errors.push({ sheet: currentWs.name, row: r, message: 'Missing product name' });
         continue;
