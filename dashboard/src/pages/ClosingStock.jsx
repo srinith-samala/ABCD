@@ -263,11 +263,15 @@ export default function ClosingStock() {
                     }}
                   >
                     <option value="">Quick select...</option>
-                    {availableMonths.map((m) => (
-                      <option key={m} value={m}>
-                        {m} {closings.some((c) => c.month === m) ? '✓ Reconciled' : ''}
-                      </option>
-                    ))}
+                    {availableMonths.map((m) => {
+                      const mKey = typeof m === 'object' && m !== null ? m.key : m;
+                      const mLabel = typeof m === 'object' && m !== null ? (m.label || m.key) : m;
+                      return (
+                        <option key={mKey} value={mKey}>
+                          {mLabel} {closings.some((c) => c.month === mKey) ? '✓ Reconciled' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 )}
               </div>
@@ -525,10 +529,10 @@ export default function ClosingStock() {
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <span style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, background: '#EEF0FF', color: '#5B21B6', fontWeight: 600 }}>
-                  Sheets: {preview.sheetNames.join(', ')}
+                  Sheets: {(preview.sheetNames || []).join(', ')}
                 </span>
                 <span style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, background: '#F1F5F9', color: '#475569', fontWeight: 600 }}>
-                  {preview.totalRows} file rows
+                  {preview.totalRows || (preview.items || []).length || 0} file rows
                 </span>
               </div>
             </div>
@@ -623,12 +627,12 @@ export default function ClosingStock() {
                 </div>
               )}
 
-              {preview.duplicateRows > 0 && (
+              {((preview.duplicateCount > 0) || (Array.isArray(preview.duplicateRows) ? preview.duplicateRows.length > 0 : Number(preview.duplicateRows) > 0)) && (
                 <div style={{ background: '#FEF2F2', border: '1px solid #FECDD3', borderRadius: 10, padding: '12px 16px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ fontSize: 16 }}>⚠️</span>
                     <span style={{ fontSize: 13, fontWeight: 700, color: '#991B1B' }}>
-                      {preview.duplicateRows} Duplicate Rows Combined
+                      {preview.duplicateCount || (Array.isArray(preview.duplicateRows) ? preview.duplicateRows.length : preview.duplicateRows) || 0} Duplicate Rows Combined
                     </span>
                   </div>
                   <p style={{ fontSize: 11.5, color: '#991B1B', marginTop: 4 }}>
@@ -923,35 +927,41 @@ export default function ClosingStock() {
                     </div>
                   </div>
 
-                  {activeViewClosing.details?.items && (
-                    <div>
-                      <h4 style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Reconciled Item Breakdown ({activeViewClosing.details.items.length})</h4>
-                      <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid #E2E8F0', borderRadius: 8 }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                          <thead style={{ background: '#F8FAFC', position: 'sticky', top: 0 }}>
-                            <tr style={{ color: '#64748B', textAlign: 'left', borderBottom: '1px solid #E2E8F0' }}>
-                              <th style={{ padding: '8px 12px' }}>Product</th>
-                              <th style={{ padding: '8px 12px' }}>Category</th>
-                              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Closing Qty</th>
-                              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Rate</th>
-                              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Value</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {activeViewClosing.details.items.map((it, i) => (
-                              <tr key={i} style={{ borderBottom: '1px solid #F1F5F9' }}>
-                                <td style={{ padding: '6px 12px', fontWeight: 600 }}>{it.name}</td>
-                                <td style={{ padding: '6px 12px', color: '#64748B' }}>{it.category || it.sheet || '-'}</td>
-                                <td style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 700, color: '#16A34A' }}>{fmtQty(it.closingStock)}</td>
-                                <td style={{ padding: '6px 12px', textAlign: 'right', color: '#64748B' }}>{inr(it.rate)}</td>
-                                <td style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 700 }}>{inr(it.closingValue)}</td>
+                  {(() => {
+                    const items = Array.isArray(activeViewClosing.details)
+                      ? activeViewClosing.details
+                      : (activeViewClosing.details?.items || []);
+                    if (!items || !items.length) return null;
+                    return (
+                      <div>
+                        <h4 style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Reconciled Item Breakdown ({items.length})</h4>
+                        <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid #E2E8F0', borderRadius: 8 }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                            <thead style={{ background: '#F8FAFC', position: 'sticky', top: 0 }}>
+                              <tr style={{ color: '#64748B', textAlign: 'left', borderBottom: '1px solid #E2E8F0' }}>
+                                <th style={{ padding: '8px 12px' }}>Product</th>
+                                <th style={{ padding: '8px 12px' }}>Category</th>
+                                <th style={{ padding: '8px 12px', textAlign: 'right' }}>Closing Qty</th>
+                                <th style={{ padding: '8px 12px', textAlign: 'right' }}>Rate</th>
+                                <th style={{ padding: '8px 12px', textAlign: 'right' }}>Value</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody>
+                              {items.map((it, i) => (
+                                <tr key={i} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                                  <td style={{ padding: '6px 12px', fontWeight: 600 }}>{it.name}</td>
+                                  <td style={{ padding: '6px 12px', color: '#64748B' }}>{it.category || it.sheet || '-'}</td>
+                                  <td style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 700, color: '#16A34A' }}>{fmtQty(it.closingStock)}</td>
+                                  <td style={{ padding: '6px 12px', textAlign: 'right', color: '#64748B' }}>{inr(it.rate)}</td>
+                                  <td style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 700 }}>{inr(it.closingValue)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
 
                 <div style={{ padding: '14px 24px', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'flex-end' }}>
