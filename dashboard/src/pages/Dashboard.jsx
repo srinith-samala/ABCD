@@ -18,7 +18,7 @@ const KpiCard = ({ label, value, sub, valueColor = '#0F1B2D', icon, bg }) => (
   </div>
 );
 
-const isAdmin = () => localStorage.getItem('role') === 'ADMIN';
+const isAdmin = () => String(localStorage.getItem('role') || '').toUpperCase() === 'ADMIN';
 const inr = (n) => `₹${Math.abs(Number(n) || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 const inr0 = (n) => `₹${Math.abs(Number(n) || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 const signedInr = (n) => `${Number(n) < 0 ? '-' : ''}${inr(n)}`;
@@ -106,6 +106,36 @@ export default function Dashboard() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
             <MonthPicker months={stats.months || []} value={month} onChange={setMonth} />
             <p style={{ fontSize: 12, color: '#8A94A6' }}>Showing <b>{stats.label || '—'}</b> · Live sales, inventory costs &amp; profits</p>
+          </div>
+        )}
+
+        {isAdmin() && stats.totalSales === 0 && stats.totalPurchases === 0 && stats.totalExpenses === 0 && (
+          <div style={{
+            background: '#FEF3C7', border: '1px solid #FDE68A', borderRadius: 10,
+            padding: '12px 16px', marginBottom: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 20 }}>💡</span>
+              <span style={{ color: '#92400E', fontSize: 13, fontWeight: 600 }}>
+                No sales or bills recorded yet for {stats.label || 'this period'}.
+              </span>
+            </div>
+            {stats.months && stats.months.length > 1 && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                {stats.months.filter(m => m.key !== month).slice(0, 3).map(m => (
+                  <button
+                    key={m.key}
+                    onClick={() => setMonth(m.key)}
+                    style={{
+                      background: '#0F1B2D', color: '#fff', border: 'none',
+                      padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer'
+                    }}
+                  >
+                    View {m.label} →
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

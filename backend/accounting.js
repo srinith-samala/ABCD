@@ -109,6 +109,21 @@ function availableMonths({ dailySales = [], expenses = [], payroll = [], transac
 function defaultMonth(data) {
   const months = availableMonths(data);
   if (!months.length) return null;
+
+  // Walk backwards from the most recent month to find the one with actual financial data
+  for (let i = months.length - 1; i >= 0; i--) {
+    const m = months[i];
+    const hasSales = (data.dailySales || []).some(s => monthKey(s.date) === m && (s.cash > 0 || s.card > 0 || s.upi > 0 || s.zomato > 0)) ||
+                     (data.transactions || []).some(t => t.type === 'SALE' && monthKey(t.createdAt) === m && Number(t.total) > 0);
+    const hasInv = (data.transactions || []).some(t => (t.type === 'PURCHASE' || t.type === 'OPENING_STOCK') && monthKey(t.createdAt) === m && Number(t.total) > 0);
+    const hasExpenses = (data.expenses || []).some(e => monthKey(e.expenseDate || e.createdAt) === m && Number(e.amount) > 0);
+    const hasPayroll = (data.payroll || []).some(p => monthKey(p.month) === m && Number(p.netPay) > 0);
+
+    if (hasSales || hasInv || hasExpenses || hasPayroll) {
+      return m;
+    }
+  }
+
   const withSalesOrInv = new Set();
   (data.dailySales || []).forEach(s => { const k = monthKey(s.date); if (k) withSalesOrInv.add(k); });
   (data.transactions || []).forEach(t => { const k = monthKey(t.createdAt); if (k) withSalesOrInv.add(k); });
