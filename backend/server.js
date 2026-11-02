@@ -1463,169 +1463,257 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
 app.get('/api/transactions/product-sales', authenticateToken, async (req, res) => {
   try {
     const qMonth = req.query.month; // e.g. "2026-10" or "all"
+    const data = await loadAccounting();
+    const months = Acc.availableMonths(data);
+    const activeMonth = qMonth && (qMonth === 'all' || months.includes(qMonth))
+      ? qMonth
+      : (Acc.defaultMonth(data) || months.slice(-1)[0] || 'all');
 
-    // Fetch all products with category
-    const products = await prisma.product.findMany({
-      select: {
-        id: true,
-        name: true,
-        sku: true,
-        unit: true,
-        emoji: true,
-        price: true,
-        costPrice: true,
-        quantity: true,
-        categoryId: true,
-        category: { select: { id: true, name: true } }
+    // Date range filter if specific month
+    let dateFilterTx = {};
+    let dateFilterReport = {};
+    if (activeMonth && activeMonth !== 'all' && /^\d{4}-\d{2}$/.test(activeMonth)) {
+      const [y, m] = activeMonth.split('-').map(Number);
+      const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
+      const end = new Date(Date.UTC(y, m, 1, 0, 0, 0));
+      dateFilterTx = { createdAt: { gte: start, lt: end } };
+      dateFilterReport = { reportDate: { gte: start, lt: end } };
+    }
+
+    // 1. Fetch POS SalesReport records for this month
+    const reports = await prisma.salesReport.findMany({
+      where: dateFilterReport,
+      orderBy: { reportDate: 'asc' }
+    });
+
+    const posMap = new Map();
+    let posTotalRevenue = 0;
+
+    reports.forEach(r => {
+      const repNet = Number(r.netSale) || Number(r.sales) || 0;
+      posTotalRevenue += repNet;
+      if (r.details) {
+        try {
+          const d = JSON.parse(r.details);
+          const subCats = Array.isArray(d.subCategories) ? d.subCategories : [];
+          const mainCats = Array.isArray(d.categories) ? d.categories : [];
+          const itemsToUse = subCats.length > 0 ? subCats : mainCats;
+          itemsToUse.forEach(it => {
+            const name = String(it.name || '').trim();
+            if (!name) return;
+            const amt = Number(it.amount) || 0;
+            const existing = posMap.get(name) || {
+              productId: name,
+              name,
+              category: it.category || it.department || (subCats.length > 0 ? 'Dishes / Items' : 'Menu Category'),
+              unit: 'orders',
+              emoji: getRelevantEmoji(name, 'Food'),
+              quantitySold: 0,
+              totalRevenue: 0,
+              daysCount: 0,
+              source: 'pos',
+            };
+            existing.totalRevenue = round2(existing.totalRevenue + amt);
+            existing.quantitySold += 1;
+            existing.daysCount += 1;
+            posMap.set(name, existing);
+          });
+        } catch (e) {}
       }
     });
 
-    // Date range filter if specific month
-    let dateFilter = {};
-    if (qMonth && qMonth !== 'all' && /^\d{4}-\d{2}$/.test(qMonth)) {
-      const [y, m] = qMonth.split('-').map(Number);
-      const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
-      const end = new Date(Date.UTC(y, m, 1, 0, 0, 0));
-      dateFilter = { createdAt: { gte: start, lt: end } };
-    }
+    // 2. Fetch MonthClosing for this month (physical inventory consumed per item)
+    const closings = activeMonth && activeMonth !== 'all'
+      ? await prisma.monthClosing.findMany({ where: { month: activeMonth } })
+      : await prisma.monthClosing.findMany({ orderBy: { month: 'desc' } });
 
-    // Fetch all SALE transactions
-    const sales = await prisma.transaction.findMany({
-      where: {
-        type: 'SALE',
-        ...dateFilter
-      },
+    const closingMap = new Map();
+    let closingTotalConsumed = 0;
+    closings.forEach(closing => {
+      if (!closing || !closing.details) return;
+      try {
+        const rows = JSON.parse(closing.details);
+        const list = Array.isArray(rows) ? rows : (rows.items || []);
+        list.forEach(item => {
+          const name = String(item.name || '').trim();
+          if (!name) return;
+          const consumedQty = round3(Number(item.consumed) || 0);
+          const closingStock = round3(Number(item.closingStock) || 0);
+          const currentStock = round3(Number(item.currentStock) || 0);
+          const rate = Number(item.rate) || 0;
+          const consumedVal = round2(consumedQty * rate);
+          const closingVal = round2(Number(item.closingValue) || (closingStock * rate));
+          const val = consumedVal > 0 ? consumedVal : closingVal;
+          const qty = consumedQty > 0 ? consumedQty : closingStock;
+
+          const existing = closingMap.get(name) || {
+            productId: item.id || name,
+            name,
+            sku: item.sku || '',
+            category: item.category || item.sheet || 'Raw Materials',
+            unit: item.unit || 'pcs',
+            emoji: getRelevantEmoji(name, item.category),
+            currentStock: currentStock,
+            closingStock: closingStock,
+            consumed: 0,
+            quantitySold: 0,
+            avgPrice: rate,
+            totalRevenue: 0,
+            consumedValue: 0,
+            closingValue: 0,
+            orderCount: 0,
+            source: 'closing',
+          };
+          existing.closingStock = closingStock;
+          existing.currentStock = currentStock;
+          existing.consumed = round3(existing.consumed + consumedQty);
+          existing.quantitySold = round3(existing.quantitySold + qty);
+          existing.totalRevenue = round2(existing.totalRevenue + val);
+          existing.consumedValue = round2(existing.consumedValue + consumedVal);
+          existing.closingValue = round2(existing.closingValue + closingVal);
+          if (rate > 0) existing.avgPrice = rate;
+          existing.orderCount += 1;
+          closingMap.set(name, existing);
+          closingTotalConsumed += val;
+        });
+      } catch (e) {}
+    });
+
+    const closingItemsRaw = Array.from(closingMap.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
+    const closingItems = closingItemsRaw.map(p => ({
+      ...p,
+      pctOfTotal: closingTotalConsumed > 0 ? round2((p.totalRevenue / closingTotalConsumed) * 100) : 0,
+    }));
+
+    // 3. Fetch Transaction SALE records for this month
+    const salesTx = await prisma.transaction.findMany({
+      where: { type: 'SALE', ...dateFilterTx },
       include: {
         product: {
           select: {
-            id: true,
-            name: true,
-            sku: true,
-            unit: true,
-            emoji: true,
-            price: true,
-            costPrice: true,
-            quantity: true,
-            category: { select: { name: true } }
+            id: true, name: true, sku: true, unit: true, emoji: true,
+            price: true, costPrice: true, quantity: true, category: { select: { name: true } }
           }
         }
       },
       orderBy: { createdAt: 'desc' }
     });
 
-    // Get all distinct available months from all transactions
-    const allTxDates = await prisma.transaction.findMany({
-      where: { type: 'SALE' },
-      select: { createdAt: true },
-      distinct: ['createdAt'],
-      orderBy: { createdAt: 'desc' }
-    });
-
-    const monthSet = new Set();
-    allTxDates.forEach(t => {
-      const d = new Date(t.createdAt);
-      if (!isNaN(d.getTime())) {
-        monthSet.add(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
-      }
-    });
-
-    // Also include current & recent months so dropdown is never blank
-    const now = new Date();
-    monthSet.add(`${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`);
-    const lastM = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-    monthSet.add(`${lastM.getUTCFullYear()}-${String(lastM.getUTCMonth() + 1).padStart(2, '0')}`);
-
-    const availableMonths = Array.from(monthSet).sort().reverse();
-    const activeMonth = qMonth && (qMonth === 'all' || availableMonths.includes(qMonth))
-      ? qMonth
-      : (availableMonths[0] || `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`);
-
-    // Aggregate by productId
-    const productSalesMap = new Map();
-    let totalRevenue = 0;
-    let totalUnits = 0;
-
-    sales.forEach(tx => {
+    const txMap = new Map();
+    let txTotalRevenue = 0;
+    salesTx.forEach(tx => {
       const pid = tx.productId;
       const qty = Number(tx.quantity) || 0;
       const rev = Number(tx.total) || 0;
-
-      totalRevenue += rev;
-      totalUnits += qty;
-
-      if (!productSalesMap.has(pid)) {
-        const prod = tx.product || products.find(p => p.id === pid) || {};
-        productSalesMap.set(pid, {
-          productId: pid,
-          name: prod.name || 'Unknown Item',
-          sku: prod.sku || '',
-          category: prod.category?.name || 'General',
-          unit: prod.unit || 'pcs',
-          emoji: prod.emoji || '📦',
-          currentStock: Number(prod.quantity) || 0,
-          sellingPrice: Number(prod.price) || 0,
-          costPrice: Number(prod.costPrice) || 0,
-          quantitySold: 0,
-          totalRevenue: 0,
-          orderCount: 0,
-        });
-      }
-
-      const rec = productSalesMap.get(pid);
-      rec.quantitySold = round3(rec.quantitySold + qty);
-      rec.totalRevenue = round2(rec.totalRevenue + rev);
-      rec.orderCount += 1;
+      txTotalRevenue += rev;
+      const prod = tx.product || {};
+      const existing = txMap.get(pid) || {
+        productId: pid,
+        name: prod.name || 'Unknown Item',
+        sku: prod.sku || '',
+        category: prod.category?.name || 'General',
+        unit: prod.unit || 'pcs',
+        emoji: prod.emoji || getRelevantEmoji(prod.name, 'General'),
+        currentStock: Number(prod.quantity) || 0,
+        sellingPrice: Number(prod.price) || 0,
+        costPrice: Number(prod.costPrice) || 0,
+        quantitySold: 0,
+        totalRevenue: 0,
+        orderCount: 0,
+        source: 'stock_order',
+      };
+      existing.quantitySold = round3(existing.quantitySold + qty);
+      existing.totalRevenue = round2(existing.totalRevenue + rev);
+      existing.orderCount += 1;
+      txMap.set(pid, existing);
     });
 
-    const productSalesList = Array.from(productSalesMap.values()).map(p => {
-      const avgPrice = p.quantitySold > 0 ? round2(p.totalRevenue / p.quantitySold) : p.sellingPrice;
-      const pctOfTotal = totalRevenue > 0 ? round2((p.totalRevenue / totalRevenue) * 100) : 0;
-      const estimatedCogs = round2(p.quantitySold * p.costPrice);
-      const estimatedProfit = p.costPrice > 0 ? round2(p.totalRevenue - estimatedCogs) : null;
-      return {
-        ...p,
-        avgPrice,
-        pctOfTotal,
-        estimatedProfit,
-      };
-    }).sort((a, b) => b.totalRevenue - a.totalRevenue);
+    const txListRaw = Array.from(txMap.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
+    const txList = txListRaw.map(p => ({
+      ...p,
+      avgPrice: p.quantitySold > 0 ? round2(p.totalRevenue / p.quantitySold) : p.sellingPrice || 0,
+      pctOfTotal: txTotalRevenue > 0 ? round2((p.totalRevenue / txTotalRevenue) * 100) : 0,
+    }));
 
-    const topByRevenue = productSalesList.length ? productSalesList[0] : null;
-    const topByQuantity = productSalesList.length
-      ? [...productSalesList].sort((a, b) => b.quantitySold - a.quantitySold)[0]
+    const posListRaw = Array.from(posMap.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
+    const posList = posListRaw.map(p => ({
+      ...p,
+      avgPrice: p.daysCount > 0 ? round2(p.totalRevenue / p.daysCount) : p.totalRevenue,
+      pctOfTotal: posTotalRevenue > 0 ? round2((p.totalRevenue / posTotalRevenue) * 100) : 0,
+    }));
+
+    // Daily sales from register for this month
+    const monthDailySales = (data.dailySales || []).filter(s => activeMonth === 'all' || Acc.monthKey(s.date) === activeMonth);
+    const totalDailySales = round2(monthDailySales.reduce((sum, s) => sum + (Number(s.cash) || 0) + (Number(s.card) || 0) + (Number(s.upi) || 0) + (Number(s.zomato) || 0), 0));
+
+    // Determine primary display list:
+    let displayList = [];
+    let activeTotalRevenue = 0;
+    let viewMode = 'pos'; // 'pos' | 'closing' | 'orders'
+
+    if (posList.length > 0) {
+      displayList = posList;
+      activeTotalRevenue = round2(posTotalRevenue);
+      viewMode = 'pos';
+    } else if (closingItems.length > 0) {
+      displayList = closingItems;
+      activeTotalRevenue = round2(closingTotalConsumed);
+      viewMode = 'closing';
+    } else if (txList.length > 0) {
+      displayList = txList;
+      activeTotalRevenue = round2(txTotalRevenue);
+      viewMode = 'orders';
+    }
+
+    const topByRevenue = displayList.length ? displayList[0] : null;
+    const topByQuantity = displayList.length
+      ? [...displayList].sort((a, b) => b.quantitySold - a.quantitySold)[0]
       : null;
 
-    // Category breakdown
-    const catMap = new Map();
-    productSalesList.forEach(p => {
-      const cat = p.category || 'General';
-      const c = catMap.get(cat) || { category: cat, revenue: 0, units: 0, productCount: 0 };
-      c.revenue = round2(c.revenue + p.totalRevenue);
-      c.units = round3(c.units + p.quantitySold);
-      c.productCount += 1;
-      catMap.set(cat, c);
-    });
-    const categoryBreakdown = Array.from(catMap.values())
-      .map(c => ({
-        ...c,
-        pct: totalRevenue > 0 ? round2((c.revenue / totalRevenue) * 100) : 0
-      }))
-      .sort((a, b) => b.revenue - a.revenue);
+    // Helper for category breakdown
+    const buildCatBreakdown = (items, total) => {
+      const catMap = new Map();
+      items.forEach(p => {
+        const cat = p.category || 'General';
+        const c = catMap.get(cat) || { category: cat, revenue: 0, units: 0, productCount: 0 };
+        c.revenue = round2(c.revenue + p.totalRevenue);
+        c.units = round3(c.units + (p.quantitySold || 1));
+        c.productCount += 1;
+        catMap.set(cat, c);
+      });
+      return Array.from(catMap.values())
+        .map(c => ({ ...c, pct: total > 0 ? round2((c.revenue / total) * 100) : 0 }))
+        .sort((a, b) => b.revenue - a.revenue);
+    };
+
+    const categoryBreakdown = buildCatBreakdown(displayList, activeTotalRevenue);
 
     res.json({
       month: activeMonth,
       monthLabel: activeMonth === 'all' ? 'All Time' : Acc.monthLabel(activeMonth),
-      availableMonths: availableMonths.map(m => ({ key: m, label: Acc.monthLabel(m) })),
+      availableMonths: months.map(m => ({ key: m, label: Acc.monthLabel(m) })),
+      viewMode,
+      hasPosData: posList.length > 0,
+      hasClosingData: closingItems.length > 0,
+      hasOrderData: txList.length > 0,
+      posTotalRevenue: round2(posTotalRevenue),
+      closingTotalConsumed: round2(closingTotalConsumed),
+      txTotalRevenue: round2(txTotalRevenue),
+      dailySalesTotal: totalDailySales,
+      dailySalesDays: monthDailySales.length,
       summary: {
-        totalRevenue: round2(totalRevenue),
-        totalUnits: round3(totalUnits),
-        totalOrders: sales.length,
-        uniqueProductsSold: productSalesList.length,
+        totalRevenue: activeTotalRevenue,
+        totalUnits: displayList.reduce((s, p) => s + (p.quantitySold || 1), 0),
+        totalOrders: viewMode === 'pos' ? reports.length : (viewMode === 'orders' ? salesTx.length : displayList.length),
+        uniqueProductsSold: displayList.length,
         topByRevenue: topByRevenue ? { name: topByRevenue.name, revenue: topByRevenue.totalRevenue } : null,
         topByQuantity: topByQuantity ? { name: topByQuantity.name, units: topByQuantity.quantitySold, unit: topByQuantity.unit } : null,
       },
       categoryBreakdown,
-      products: productSalesList,
+      products: displayList,
+      posItems: posList,
+      closingItems,
+      stockItems: txList,
     });
   } catch (err) {
     console.error('Error in /api/transactions/product-sales:', err);

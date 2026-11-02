@@ -118,8 +118,9 @@ function defaultMonth(data) {
     const hasInv = (data.transactions || []).some(t => (t.type === 'PURCHASE' || t.type === 'OPENING_STOCK') && monthKey(t.createdAt) === m && Number(t.total) > 0);
     const hasExpenses = (data.expenses || []).some(e => monthKey(e.expenseDate || e.createdAt) === m && Number(e.amount) > 0);
     const hasPayroll = (data.payroll || []).some(p => monthKey(p.month) === m && Number(p.netPay) > 0);
+    const hasClosing = (data.monthClosings || []).some(c => c.month === m);
 
-    if (hasSales || hasInv || hasExpenses || hasPayroll) {
+    if (hasSales || hasInv || hasExpenses || hasPayroll || hasClosing) {
       return m;
     }
   }
