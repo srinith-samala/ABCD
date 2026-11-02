@@ -1460,34 +1460,33 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
 });
 
 // --- PRODUCT-WISE MONTHLY SALES SUMMARY ---
+// --- MONTHLY BILL SALES BY DISH & CATEGORY ---
 app.get('/api/transactions/product-sales', authenticateToken, async (req, res) => {
   try {
     const qMonth = req.query.month; // e.g. "2026-10" or "all"
-    const data = await loadAccounting();
-    const months = Acc.availableMonths(data);
-    const activeMonth = qMonth && (qMonth === 'all' || months.includes(qMonth))
-      ? qMonth
-      : (Acc.defaultMonth(data) || months.slice(-1)[0] || 'all');
 
-    // Date range filter if specific month
-    let dateFilterTx = {};
-    let dateFilterReport = {};
-    if (activeMonth && activeMonth !== 'all' && /^\d{4}-\d{2}$/.test(activeMonth)) {
-      const [y, m] = activeMonth.split('-').map(Number);
-      const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
-      const end = new Date(Date.UTC(y, m, 1, 0, 0, 0));
-      dateFilterTx = { createdAt: { gte: start, lt: end } };
-      dateFilterReport = { reportDate: { gte: start, lt: end } };
-    }
-
-    // 1. Fetch POS SalesReport records for this month
-    const reports = await prisma.salesReport.findMany({
-      where: dateFilterReport,
+    // Fetch all POS SalesReport records
+    const allReports = await prisma.salesReport.findMany({
       orderBy: { reportDate: 'asc' }
     });
 
+    // Available months from uploaded sales bills
+    const billMonths = [...new Set(allReports.map(r => Acc.monthKey(r.reportDate)).filter(Boolean))].sort();
+    const data = await loadAccounting();
+    const allAvailableMonths = [...new Set([...billMonths, ...Acc.availableMonths(data)])].sort();
+
+    // Default to latest month with sales bills, or provided month
+    const activeMonth = qMonth && (qMonth === 'all' || allAvailableMonths.includes(qMonth))
+      ? qMonth
+      : (billMonths.slice(-1)[0] || Acc.defaultMonth(data) || allAvailableMonths.slice(-1)[0] || 'all');
+
+    // Filter reports for the active month using Kolkata timezone
+    const reports = allReports.filter(r => activeMonth === 'all' || Acc.monthKey(r.reportDate) === activeMonth);
+
     const posMap = new Map();
     let posTotalRevenue = 0;
+    const catMap = new Map();
+    let catTotalRevenue = 0;
 
     reports.forEach(r => {
       const repNet = Number(r.netSale) || Number(r.sales) || 0;
@@ -1497,15 +1496,19 @@ app.get('/api/transactions/product-sales', authenticateToken, async (req, res) =
           const d = JSON.parse(r.details);
           const subCats = Array.isArray(d.subCategories) ? d.subCategories : [];
           const mainCats = Array.isArray(d.categories) ? d.categories : [];
-          const itemsToUse = subCats.length > 0 ? subCats : mainCats;
-          itemsToUse.forEach(it => {
+
+          // 1. Extract dishes / subcategories (e.g. Paneer Tikka, Tandoori dishes...)
+          subCats.forEach(it => {
             const name = String(it.name || '').trim();
             if (!name) return;
             const amt = Number(it.amount) || 0;
-            const existing = posMap.get(name) || {
-              productId: name,
+            const key = `dish:${norm(name)}`;
+            const existing = posMap.get(key) || {
+              productId: key,
               name,
-              category: it.category || it.department || (subCats.length > 0 ? 'Dishes / Items' : 'Menu Category'),
+              itemType: 'Dish / Item',
+              category: it.category || it.department || 'Dishes',
+              department: it.department || 'Food',
               unit: 'orders',
               emoji: getRelevantEmoji(name, 'Food'),
               quantitySold: 0,
@@ -1516,233 +1519,98 @@ app.get('/api/transactions/product-sales', authenticateToken, async (req, res) =
             existing.totalRevenue = round2(existing.totalRevenue + amt);
             existing.quantitySold += 1;
             existing.daysCount += 1;
-            posMap.set(name, existing);
+            posMap.set(key, existing);
+          });
+
+          // 2. Extract food categories (e.g. Rice & Biryani, Chinese Starter, Nazrana E Tandoor...)
+          mainCats.forEach(it => {
+            const name = String(it.name || '').trim();
+            if (!name) return;
+            const amt = Number(it.amount) || 0;
+            const key = `cat:${norm(name)}`;
+            const existing = posMap.get(key) || {
+              productId: key,
+              name,
+              itemType: 'Category',
+              category: it.department || 'Menu Category',
+              department: it.department || 'Food',
+              unit: 'orders',
+              emoji: getRelevantEmoji(name, 'Food'),
+              quantitySold: 0,
+              totalRevenue: 0,
+              daysCount: 0,
+              source: 'pos',
+            };
+            existing.totalRevenue = round2(existing.totalRevenue + amt);
+            existing.quantitySold += 1;
+            existing.daysCount += 1;
+            posMap.set(key, existing);
+
+            const catKey = norm(name);
+            const catExisting = catMap.get(catKey) || {
+              name,
+              amount: 0,
+              department: it.department || 'Food'
+            };
+            catExisting.amount = round2(catExisting.amount + amt);
+            catMap.set(catKey, catExisting);
+            catTotalRevenue += amt;
           });
         } catch (e) {}
       }
     });
 
-    // 2. Fetch MonthClosing for this month (physical inventory consumed per item)
-    const closings = activeMonth && activeMonth !== 'all'
-      ? await prisma.monthClosing.findMany({ where: { month: activeMonth } })
-      : await prisma.monthClosing.findMany({ orderBy: { month: 'desc' } });
-
-    const closingMap = new Map();
-    let closingTotalConsumed = 0;
-    closings.forEach(closing => {
-      if (!closing || !closing.details) return;
-      try {
-        const rows = JSON.parse(closing.details);
-        const list = Array.isArray(rows) ? rows : (rows.items || []);
-        list.forEach(item => {
-          const name = String(item.name || '').trim();
-          if (!name) return;
-          const consumedQty = round3(Number(item.consumed) || 0);
-          const closingStock = round3(Number(item.closingStock) || 0);
-          const currentStock = round3(Number(item.currentStock) || 0);
-          const rate = Number(item.rate) || 0;
-          const consumedVal = round2(consumedQty * rate);
-          const closingVal = round2(Number(item.closingValue) || (closingStock * rate));
-          const val = consumedVal > 0 ? consumedVal : closingVal;
-          const qty = consumedQty > 0 ? consumedQty : closingStock;
-
-          const existing = closingMap.get(name) || {
-            productId: item.id || name,
-            name,
-            sku: item.sku || '',
-            category: item.category || item.sheet || 'Raw Materials',
-            unit: item.unit || 'pcs',
-            emoji: getRelevantEmoji(name, item.category),
-            currentStock: currentStock,
-            closingStock: closingStock,
-            consumed: 0,
-            quantitySold: 0,
-            avgPrice: rate,
-            totalRevenue: 0,
-            consumedValue: 0,
-            closingValue: 0,
-            orderCount: 0,
-            source: 'closing',
-          };
-          existing.closingStock = closingStock;
-          existing.currentStock = currentStock;
-          existing.consumed = round3(existing.consumed + consumedQty);
-          existing.quantitySold = round3(existing.quantitySold + qty);
-          existing.totalRevenue = round2(existing.totalRevenue + val);
-          existing.consumedValue = round2(existing.consumedValue + consumedVal);
-          existing.closingValue = round2(existing.closingValue + closingVal);
-          if (rate > 0) existing.avgPrice = rate;
-          existing.orderCount += 1;
-          closingMap.set(name, existing);
-          closingTotalConsumed += val;
-        });
-      } catch (e) {}
-    });
-
-    const closingItemsRaw = Array.from(closingMap.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
-    const closingItems = closingItemsRaw.map(p => ({
-      ...p,
-      pctOfTotal: closingTotalConsumed > 0 ? round2((p.totalRevenue / closingTotalConsumed) * 100) : 0,
-    }));
-
-    // 3. Fetch all Transaction records for this month (both Stock In / Purchase and Stock Out / Sale)
-    const allTx = await prisma.transaction.findMany({
-      where: dateFilterTx,
-      include: {
-        product: {
-          select: {
-            id: true, name: true, sku: true, unit: true, emoji: true,
-            price: true, costPrice: true, quantity: true, category: { select: { name: true } }
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    // Filter strictly using Acc.monthKey to match Asia/Kolkata ledger
-    const monthTx = allTx.filter(tx => activeMonth === 'all' || Acc.monthKey(tx.createdAt) === activeMonth);
-
-    const txMap = new Map();
-    let txTotalRevenue = 0;
-    let txTotalPurchases = 0;
-    let txTotalSales = 0;
-
-    monthTx.forEach(tx => {
-      const pid = tx.productId || tx.product?.name || `tx-${tx.id}`;
-      const qty = Number(tx.quantity) || 0;
-      const tot = Number(tx.total) || 0;
-      const prod = tx.product || {};
-      const isSale = tx.type === 'SALE';
-      const isPurchase = tx.type === 'PURCHASE' || tx.type === 'OPENING_STOCK';
-
-      if (isSale) txTotalSales += tot;
-      if (isPurchase) txTotalPurchases += tot;
-      txTotalRevenue += tot;
-
-      const existing = txMap.get(pid) || {
-        productId: pid,
-        name: prod.name || 'Unknown Item',
-        sku: prod.sku || '',
-        category: prod.category?.name || 'General',
-        unit: prod.unit || 'pcs',
-        emoji: prod.emoji || getRelevantEmoji(prod.name, 'General'),
-        currentStock: Number(prod.quantity) || 0,
-        sellingPrice: Number(prod.price) || 0,
-        costPrice: Number(prod.costPrice) || 0,
-        quantitySold: 0,
-        totalRevenue: 0,
-        totalPurchases: 0,
-        purchaseQty: 0,
-        totalSales: 0,
-        saleQty: 0,
-        orderCount: 0,
-        type: tx.type,
-        source: 'stock_order',
-      };
-
-      existing.quantitySold = round3(existing.quantitySold + qty);
-      existing.totalRevenue = round2(existing.totalRevenue + tot);
-      if (isSale) {
-        existing.totalSales = round2(existing.totalSales + tot);
-        existing.saleQty = round3(existing.saleQty + qty);
-      }
-      if (isPurchase) {
-        existing.totalPurchases = round2(existing.totalPurchases + tot);
-        existing.purchaseQty = round3(existing.purchaseQty + qty);
-      }
-      existing.orderCount += 1;
-      if (existing.totalPurchases > 0 && existing.totalSales > 0) {
-        existing.type = 'BOTH';
-      }
-      txMap.set(pid, existing);
-    });
-
-    const txListRaw = Array.from(txMap.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
-    const txList = txListRaw.map(p => ({
-      ...p,
-      avgPrice: p.quantitySold > 0 ? round2(p.totalRevenue / p.quantitySold) : (p.costPrice || p.sellingPrice || 0),
-      pctOfTotal: txTotalRevenue > 0 ? round2((p.totalRevenue / txTotalRevenue) * 100) : 0,
-    }));
-
     const posListRaw = Array.from(posMap.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
+    const activeTotalRevenue = posTotalRevenue > 0 ? posTotalRevenue : posListRaw.reduce((s, p) => s + p.totalRevenue, 0);
+
     const posList = posListRaw.map(p => ({
       ...p,
       avgPrice: p.daysCount > 0 ? round2(p.totalRevenue / p.daysCount) : p.totalRevenue,
-      pctOfTotal: posTotalRevenue > 0 ? round2((p.totalRevenue / posTotalRevenue) * 100) : 0,
+      pctOfTotal: activeTotalRevenue > 0 ? round2((p.totalRevenue / activeTotalRevenue) * 100) : 0,
     }));
 
-    // Daily sales from register for this month
-    const monthDailySales = (data.dailySales || []).filter(s => activeMonth === 'all' || Acc.monthKey(s.date) === activeMonth);
-    const totalDailySales = round2(monthDailySales.reduce((sum, s) => sum + (Number(s.cash) || 0) + (Number(s.card) || 0) + (Number(s.upi) || 0) + (Number(s.zomato) || 0), 0));
+    const topCategories = Array.from(catMap.values())
+      .sort((a, b) => b.amount - a.amount)
+      .map(c => ({
+        name: c.name,
+        amount: round2(c.amount),
+        pct: catTotalRevenue > 0 ? Math.round((c.amount / catTotalRevenue) * 100) : 0,
+      }));
 
-    // Determine primary display list:
-    let displayList = [];
-    let activeTotalRevenue = 0;
-    let viewMode = 'orders'; // 'orders' | 'pos' | 'closing'
+    const topByRevenue = posList.length ? posList[0] : null;
 
-    if (txList.length > 0) {
-      displayList = txList;
-      activeTotalRevenue = round2(txTotalRevenue);
-      viewMode = 'orders';
-    } else if (posList.length > 0) {
-      displayList = posList;
-      activeTotalRevenue = round2(posTotalRevenue);
-      viewMode = 'pos';
-    } else if (closingItems.length > 0) {
-      displayList = closingItems;
-      activeTotalRevenue = round2(closingTotalConsumed);
-      viewMode = 'closing';
-    }
-
-    const topByRevenue = displayList.length ? displayList[0] : null;
-    const topByQuantity = displayList.length
-      ? [...displayList].sort((a, b) => b.quantitySold - a.quantitySold)[0]
-      : null;
-
-    // Helper for category breakdown
-    const buildCatBreakdown = (items, total) => {
-      const catMap = new Map();
-      items.forEach(p => {
-        const cat = p.category || 'General';
-        const c = catMap.get(cat) || { category: cat, revenue: 0, units: 0, productCount: 0 };
-        c.revenue = round2(c.revenue + p.totalRevenue);
-        c.units = round3(c.units + (p.quantitySold || 1));
-        c.productCount += 1;
-        catMap.set(cat, c);
-      });
-      return Array.from(catMap.values())
-        .map(c => ({ ...c, pct: total > 0 ? round2((c.revenue / total) * 100) : 0 }))
-        .sort((a, b) => b.revenue - a.revenue);
-    };
-
-    const categoryBreakdown = buildCatBreakdown(displayList, activeTotalRevenue);
+    // Category breakdown
+    const breakdownMap = new Map();
+    posList.forEach(p => {
+      const cat = p.category || 'General';
+      const c = breakdownMap.get(cat) || { category: cat, revenue: 0, count: 0 };
+      c.revenue = round2(c.revenue + p.totalRevenue);
+      c.count += 1;
+      breakdownMap.set(cat, c);
+    });
+    const categoryBreakdown = Array.from(breakdownMap.values())
+      .map(c => ({
+        ...c,
+        pct: activeTotalRevenue > 0 ? round2((c.revenue / activeTotalRevenue) * 100) : 0
+      }))
+      .sort((a, b) => b.revenue - a.revenue);
 
     res.json({
       month: activeMonth,
       monthLabel: activeMonth === 'all' ? 'All Time' : Acc.monthLabel(activeMonth),
-      availableMonths: months.map(m => ({ key: m, label: Acc.monthLabel(m) })),
-      viewMode,
-      hasPosData: posList.length > 0,
-      hasClosingData: closingItems.length > 0,
-      hasOrderData: txList.length > 0,
-      posTotalRevenue: round2(posTotalRevenue),
-      closingTotalConsumed: round2(closingTotalConsumed),
-      txTotalRevenue: round2(txTotalRevenue),
-      dailySalesTotal: totalDailySales,
-      dailySalesDays: monthDailySales.length,
+      availableMonths: allAvailableMonths.map(m => ({ key: m, label: Acc.monthLabel(m) })),
+      billMonths,
+      hasBillData: reports.length > 0,
+      totalBillDays: reports.length,
+      topCategories,
       summary: {
-        totalRevenue: activeTotalRevenue,
-        totalUnits: displayList.reduce((s, p) => s + (p.quantitySold || 1), 0),
-        totalOrders: viewMode === 'pos' ? reports.length : (viewMode === 'orders' ? monthTx.length : displayList.length),
-        uniqueProductsSold: displayList.length,
-        topByRevenue: topByRevenue ? { name: topByRevenue.name, revenue: topByRevenue.totalRevenue } : null,
-        topByQuantity: topByQuantity ? { name: topByQuantity.name, units: topByQuantity.quantitySold, unit: topByQuantity.unit } : null,
+        totalRevenue: round2(activeTotalRevenue),
+        totalItems: posList.length,
+        daysCount: reports.length,
+        topItem: topByRevenue ? { name: topByRevenue.name, revenue: topByRevenue.totalRevenue } : null,
       },
       categoryBreakdown,
-      products: displayList,
-      posItems: posList,
-      closingItems,
-      stockItems: txList,
+      products: posList,
     });
   } catch (err) {
     console.error('Error in /api/transactions/product-sales:', err);
